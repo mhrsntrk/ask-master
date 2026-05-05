@@ -9,12 +9,12 @@ class WSClient {
 public:
     WSClient() : _onMessage(nullptr), _onConnect(nullptr), _onDisconnect(nullptr) {}
 
-    void begin(const char* host, uint16_t port) {
+    void begin(const char* host, uint16_t port, uint16_t reconnectInterval = 3000) {
         _webSocket.begin(host, port, "/");
         _webSocket.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
             this->webSocketEvent(type, payload, length);
         });
-        _webSocket.setReconnectInterval(WS_RECONNECT_MS);
+        _webSocket.setReconnectInterval(reconnectInterval);
     }
 
     void loop() {

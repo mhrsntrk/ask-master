@@ -44,7 +44,7 @@ int drawWordWrapped(const char* text, int x, int y, int maxWidth, uint16_t color
     return cursorY + lineHeight;
 }
 
-void drawIdleScreen(const char* version, const char* ip) {
+void drawIdleScreen(const char* version, const char* ip, bool showSetupHint) {
     initCanvasIfNeeded();
     int dw = M5Cardputer.Display.width();
     int dh = M5Cardputer.Display.height();
@@ -53,7 +53,13 @@ void drawIdleScreen(const char* version, const char* ip) {
     
     canvas.setTextDatum(middle_center);
     canvas.setTextColor(TFT_WHITE);
-    canvas.drawString("Waiting for agent...", dw / 2, dh / 2);
+    canvas.drawString("Waiting for agent...", dw / 2, dh / 2 - 10);
+    
+    if (showSetupHint) {
+        canvas.setTextColor(TFT_LIGHTGREY);
+        canvas.setTextDatum(middle_center);
+        canvas.drawString("[S] Settings", dw / 2, dh / 2 + 10);
+    }
     
     if (version) {
         canvas.setTextColor(TFT_LIGHTGREY);
@@ -65,6 +71,73 @@ void drawIdleScreen(const char* version, const char* ip) {
         canvas.setTextDatum(top_center);
         canvas.drawString(ip, dw / 2, 5);
     }
+    
+    canvas.pushSprite(0, 0);
+}
+
+void drawSetupScreen(const char* label, const char* context, const char* inputBuffer) {
+    initCanvasIfNeeded();
+    int dw = M5Cardputer.Display.width();
+    
+    canvas.fillSprite(BLACK);
+    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 100, 0));
+    
+    canvas.setTextColor(WHITE);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("SETUP", dw / 2, 10);
+    
+    int y = 25;
+    if (label) y = drawWordWrapped(label, 5, y, dw - 10, TFT_GREEN);
+    if (context && strlen(context) > 0) {
+        y += 5;
+        y = drawWordWrapped(context, 5, y, dw - 10, TFT_LIGHTGREY);
+    }
+    
+    y += 5;
+    canvas.drawLine(0, y, dw, y, TFT_DARKGREY);
+    y += 5;
+    
+    canvas.setTextColor(TFT_WHITE);
+    canvas.setTextDatum(top_left);
+    canvas.setCursor(5, y);
+    canvas.print("> ");
+    if (inputBuffer) canvas.print(inputBuffer);
+    
+    canvas.pushSprite(0, 0);
+}
+
+void drawSetupSummaryScreen(const char* ssid, const char* serverIP, uint16_t port) {
+    initCanvasIfNeeded();
+    int dw = M5Cardputer.Display.width();
+    int dh = M5Cardputer.Display.height();
+    
+    canvas.fillSprite(BLACK);
+    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 100, 0));
+    
+    canvas.setTextColor(WHITE);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("SETUP", dw / 2, 10);
+    
+    int y = 25;
+    canvas.setTextColor(TFT_GREEN);
+    canvas.setTextDatum(top_left);
+    canvas.setCursor(5, y);
+    canvas.print("WiFi: ");
+    canvas.setTextColor(TFT_WHITE);
+    y = drawWordWrapped(ssid ? ssid : "-", 40, y, dw - 45, TFT_WHITE);
+    
+    y += 5;
+    canvas.setTextColor(TFT_GREEN);
+    canvas.setCursor(5, y);
+    canvas.print("Server: ");
+    canvas.setTextColor(TFT_WHITE);
+    char serverInfo[32];
+    snprintf(serverInfo, sizeof(serverInfo), "%s:%d", serverIP ? serverIP : "-", port);
+    y = drawWordWrapped(serverInfo, 50, y, dw - 55, TFT_WHITE);
+    
+    canvas.setTextColor(TFT_WHITE);
+    canvas.setTextDatum(bottom_center);
+    canvas.drawString("[Y] Save   [N] Retry", dw / 2, dh - 5);
     
     canvas.pushSprite(0, 0);
 }

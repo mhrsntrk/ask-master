@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
 #include "config.h"
+#include "config_manager.h"
 #include "ui.h"
 #include "ws_client.h"
 #include <ArduinoJson.h>
@@ -10,12 +11,24 @@ enum State {
     IDLE,
     RENDERING,
     WAITING_INPUT,
-    SENDING
+    SENDING,
+    CONFIGURING
+};
+
+enum SetupStep {
+    SETUP_SSID,
+    SETUP_PASSWORD,
+    SETUP_SERVER_IP,
+    SETUP_SERVER_PORT,
+    SETUP_CONFIRM
 };
 
 static constexpr const char* APP_VERSION = "ask-master v0.1";
 
 State currentState = CONNECTING;
+SetupStep setupStep = SETUP_SSID;
+bool inSetupMode = false;
+ConfigManager configManager;
 WSClient wsClient;
 char inputBuffer[81] = {0};
 int inputLength = 0;
@@ -30,10 +43,14 @@ void onWSConnect();
 void onWSDisconnect();
 void renderCurrentScreen();
 void handleKeyboard();
+void handleSetupKeyboard();
 void sendReply(const String& reply);
 void clearCurrentPrompt();
 void drawConnectingScreen();
 void drawIdle();
+void runSetupFlow();
+void saveSetupAndConnect();
+void startNormalOperation();
 
 void setup() {
     auto cfg = M5.config();
@@ -42,25 +59,54 @@ void setup() {
 
     drawConnectingScreen();
 
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        drawConnectingScreen();
+    configManager.begin();
+    bool hasConfig = configManager.load();
+
+    if (!hasConfig) {
+        runSetupFlow();
+    } else {
+        startNormalOperation();
     }
-
-    wsClient.begin(WS_HOST, WS_PORT);
-    wsClient.onMessage(onWSMessage);
-    wsClient.onConnect(onWSConnect);
-    wsClient.onDisconnect(onWSDisconnect);
-
-    currentState = IDLE;
-    drawIdle();
 }
 
 void loop() {
     M5Cardputer.update();
     wsClient.loop();
     handleKeyboard();
+}
+
+void runSetupFlow() {
+    inSetupMode = true;
+    currentState = CONFIGURING;
+    setupStep = SETUP_SSID;
+    inputBuffer[0] = '\0';
+    inputLength = 0;
+    drawSetupScreen("WiFi Network Name (SSID)", "Type your WiFi name", inputBuffer);
+    M5Cardputer.Speaker.tone(BEEP_FREQ_ASK, BEEP_DURATION_MS);
+}
+
+void saveSetupAndConnect() {
+    configManager.save();
+    inSetupMode = false;
+    currentState = CONNECTING;
+    drawConnectingScreen();
+    startNormalOperation();
+}
+
+void startNormalOperation() {
+    WiFi.begin(configManager.getWiFiSSID(), configManager.getWiFiPassword());
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        drawConnectingScreen();
+    }
+
+    wsClient.begin(configManager.getServerIP(), configManager.getServerPort());
+    wsClient.onMessage(onWSMessage);
+    wsClient.onConnect(onWSConnect);
+    wsClient.onDisconnect(onWSDisconnect);
+
+    currentState = IDLE;
+    drawIdle();
 }
 
 void onWSMessage(const String& message) {
@@ -130,6 +176,26 @@ void renderCurrentScreen() {
 }
 
 void handleKeyboard() {
+    if (inSetupMode) {
+        handleSetupKeyboard();
+        return;
+    }
+
+    if (currentState == IDLE) {
+        if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) {
+            return;
+        }
+        Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
+        for (char c : status.word) {
+            if (c == 's' || c == 'S') {
+                configManager.clear();
+                runSetupFlow();
+                return;
+            }
+        }
+        return;
+    }
+
     if (currentState != WAITING_INPUT) {
         return;
     }
@@ -192,6 +258,108 @@ void handleKeyboard() {
     }
 }
 
+void handleSetupKeyboard() {
+    if (currentState != CONFIGURING) {
+        return;
+    }
+
+    if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) {
+        return;
+    }
+
+    Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
+
+    if (setupStep == SETUP_CONFIRM) {
+        for (char c : status.word) {
+            if (c == 'y' || c == 'Y') {
+                saveSetupAndConnect();
+                return;
+            }
+            if (c == 'n' || c == 'N') {
+                configManager.clear();
+                runSetupFlow();
+                return;
+            }
+        }
+        return;
+    }
+
+    for (char c : status.word) {
+        if (inputLength < 80) {
+            inputBuffer[inputLength++] = c;
+            inputBuffer[inputLength] = '\0';
+        }
+    }
+
+    if (status.del && inputLength > 0) {
+        inputBuffer[--inputLength] = '\0';
+    }
+
+    if (status.enter && inputLength > 0) {
+        switch (setupStep) {
+            case SETUP_SSID:
+                configManager.setWiFiSSID(inputBuffer);
+                setupStep = SETUP_PASSWORD;
+                inputBuffer[0] = '\0';
+                inputLength = 0;
+                drawSetupScreen("WiFi Password", "Type your WiFi password", inputBuffer);
+                break;
+            case SETUP_PASSWORD:
+                configManager.setWiFiPassword(inputBuffer);
+                setupStep = SETUP_SERVER_IP;
+                inputBuffer[0] = '\0';
+                inputLength = 0;
+                drawSetupScreen("Server IP Address", "Your computer's IP (e.g. 192.168.1.5)", inputBuffer);
+                break;
+            case SETUP_SERVER_IP:
+                configManager.setServerIP(inputBuffer);
+                setupStep = SETUP_SERVER_PORT;
+                inputBuffer[0] = '\0';
+                inputLength = 0;
+                strcpy(inputBuffer, "8765");
+                inputLength = 4;
+                drawSetupScreen("Server Port", "WebSocket port (default: 8765)", inputBuffer);
+                break;
+            case SETUP_SERVER_PORT:
+                configManager.setServerPort(atoi(inputBuffer));
+                setupStep = SETUP_CONFIRM;
+                drawSetupSummaryScreen(
+                    configManager.getWiFiSSID(),
+                    configManager.getServerIP(),
+                    configManager.getServerPort()
+                );
+                break;
+            default:
+                break;
+        }
+        return;
+    }
+
+    const char* label = "";
+    const char* context = "";
+    switch (setupStep) {
+        case SETUP_SSID:
+            label = "WiFi Network Name (SSID)";
+            context = "Type your WiFi name";
+            break;
+        case SETUP_PASSWORD:
+            label = "WiFi Password";
+            context = "Type your WiFi password";
+            break;
+        case SETUP_SERVER_IP:
+            label = "Server IP Address";
+            context = "Your computer's IP (e.g. 192.168.1.5)";
+            break;
+        case SETUP_SERVER_PORT:
+            label = "Server Port";
+            context = "WebSocket port (default: 8765)";
+            break;
+        default:
+            break;
+    }
+    drawSetupScreen(label, context, inputBuffer);
+}
+
 void sendReply(const String& reply) {
     currentState = SENDING;
     wsClient.send(reply);
@@ -216,9 +384,9 @@ void clearCurrentPrompt() {
 }
 
 void drawConnectingScreen() {
-    drawIdleScreen("Connecting...", "Waiting for WiFi / WS");
+    drawIdleScreen("Connecting...", "Waiting for WiFi / WS", false);
 }
 
 void drawIdle() {
-    drawIdleScreen(APP_VERSION, WiFi.localIP().toString().c_str());
+    drawIdleScreen(APP_VERSION, WiFi.localIP().toString().c_str(), true);
 }
