@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires ask-master MCP server binary and M5Stack Cardputer ADV device
 metadata:
   author: mhrsntrk
-  version: "1.0"
+  version: "1.0.1"
 allowed-tools: ask-human confirm choose escalate-to-human
 ---
 
