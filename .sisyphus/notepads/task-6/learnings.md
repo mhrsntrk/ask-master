@@ -1,4 +1,0 @@
-- Used  for accurate rune counting.
-- Efficiently iterated over string indices to find truncation point without  conversion.
-- Used utf8.RuneCountInString for accurate rune counting.
-- Efficiently iterated over string indices to find truncation point without rune slice conversion.

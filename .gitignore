@@ -1,3 +1,35 @@
+# =============================================================================
+# macOS
+# =============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# =============================================================================
+# IDE / Editor
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+.netbeans/
+*.sublime-*
+
+# =============================================================================
+# Go
+# =============================================================================
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -8,11 +40,41 @@
 # Test binary, built with 'go test -c'
 *.test
 
-# Output of the go coverage tool, specifically when used with Litmus
+# Output of the go coverage tool
 *.out
+coverage.html
+coverage.txt
 
-# Dependency directories (remove the // [1] if you want to check them in)
+# Dependency directories
 vendor/
 
 # Project binary
 ask-master
+ask-master-test
+
+# =============================================================================
+# PlatformIO / Arduino Firmware
+# =============================================================================
+# Build directory
+.pio/build/
+.pio/libdeps/
+
+# Compiled binaries
+*.bin
+*.elf
+*.hex
+
+# =============================================================================
+# Local Tooling / Logs
+# =============================================================================
+.sisyphus/
+*.log
+
+# =============================================================================
+# General
+# =============================================================================
+*.tmp
+*.temp
+.env
+.env.local
+.env.*.local

@@ -1,5 +1,0 @@
-Verification results for Task 5 - WSClient implementation:
-#include "config.h"
-        _webSocket.setReconnectInterval(WS_RECONNECT_MS);
-class WSClient {
-File created and verified.

@@ -1,3 +1,0 @@
-- Bridge uses `mu` to serialize active tool calls and `writeMu` to satisfy gorilla/websocket's single-writer rule.
-- Keeping connection state behind a dedicated state mutex avoids races between `SendAndWait`, `receive`, and disconnect handling.
-- `choose` replies are mapped from digit strings to option text inside `receive()`, with out-of-range digits surfaced as errors.

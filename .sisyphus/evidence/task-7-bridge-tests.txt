@@ -1,7 +1,0 @@
-Command: go test -race -v ./... -run TestBridge
-Result: PASS
-Summary: 11 passed in 2 packages
-
-Diagnostics:
-- bridge.go: clean
-- bridge_test.go: clean

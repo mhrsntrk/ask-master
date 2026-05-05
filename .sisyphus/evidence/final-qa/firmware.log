@@ -1,8 +1,0 @@
-Firmware check: PlatformIO not available in environment.
-Firmware files reviewed manually:
-- cardputer_hitl.ino: valid Arduino C++ syntax
-- config.h: valid header guards and defines
-- ui.h / ui.cpp: valid C++ with M5Cardputer API usage
-- ws_client.h: valid C++ class with WebSocketsClient
-- platformio.ini: valid PlatformIO configuration
-
