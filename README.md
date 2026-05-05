@@ -2,6 +2,8 @@
 
 Physical Human-in-the-Loop MCP server for AI coding agents using M5Stack Cardputer.
 
+[![skills.sh](https://skills.sh/b/mhrsntrk/ask-master-skill)](https://skills.sh/mhrsntrk/ask-master-skill)
+
 ## Why "ask-master"?
 
 > **Trigger Warning:** This section contains references to Git branch names and first-name etymology. Reader discretion is advised.
