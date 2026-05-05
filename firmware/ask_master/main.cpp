@@ -131,9 +131,34 @@ void saveSetupAndConnect() {
 
 void startNormalOperation() {
     WiFi.begin(configManager.getWiFiSSID(), configManager.getWiFiPassword());
+    int wifiTimeout = 0;
+    const int maxWifiTimeout = 30; // 30 * 500ms = 15 seconds
+
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         drawConnectingScreen();
+        wifiTimeout++;
+
+        // Check for 'S' key to enter setup during connection
+        M5Cardputer.update();
+        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
+            Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
+            for (char c : status.word) {
+                if (c == 's' || c == 'S') {
+                    WiFi.disconnect();
+                    configManager.clear();
+                    runSetupFlow();
+                    return;
+                }
+            }
+        }
+
+        if (wifiTimeout >= maxWifiTimeout) {
+            WiFi.disconnect();
+            configManager.clear();
+            runSetupFlow();
+            return;
+        }
     }
 
     wsClient.begin(configManager.getServerIP(), configManager.getServerPort());

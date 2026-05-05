@@ -18,6 +18,10 @@ bool ConfigManager::load() {
         prefs.getString("password", _password, sizeof(_password));
         prefs.getString("serverIP", _serverIP, sizeof(_serverIP));
         _serverPort = prefs.getUShort("serverPort", 8765);
+        if (_ssid[0] == '\0' || _serverIP[0] == '\0') {
+            _configured = false;
+            return false;
+        }
         return true;
     }
     return false;
