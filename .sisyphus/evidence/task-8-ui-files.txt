@@ -1,0 +1,9 @@
+4 matches in 1 files:
+
+firmware/cardputer_hitl/ui.h:6:void drawIdleScreen(const char* version, const char* ip);
+firmware/cardputer_hitl/ui.h:7:void drawAskScreen(const char* question, const char* context, const char* inputB...
+firmware/cardputer_hitl/ui.h:8:void drawConfirmScreen(const char* statement, const char* consequence);
+firmware/cardputer_hitl/ui.h:9:void drawChooseScreen(const char* question, const char* context, const String op...
+1 matches in 1 files:
+
+firmware/cardputer_hitl/ui.cpp:5:static M5Canvas canvas(&M5Cardputer.Display);

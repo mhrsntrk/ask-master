@@ -1,0 +1,3 @@
+- TDD RED-GREEN cycle completed for config.go
+- Used flag package with CommandLine reset to isolation in tests
+- slog configured with JSON handler as requested

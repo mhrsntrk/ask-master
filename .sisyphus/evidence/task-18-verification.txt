@@ -1,0 +1,6 @@
+Build 1 (Standard) Success
+7855042
+Go build: Success
+Build 2 (CGO_ENABLED=0) Success
+7855042
+Go test: 37 passed in 2 packages

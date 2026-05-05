@@ -1,0 +1,11 @@
+Integration Test Results - Tue May  5 01:03:19 CEST 2026
+
+Command: go test -race -v ./... -run Integration
+Result: 5 passed in 2 packages
+
+Tests executed:
+  - TestIntegration_AskHuman_Success
+  - TestIntegration_Confirm_Success
+  - TestIntegration_Choose_Success
+  - TestIntegration_OfflineDegradation
+  - TestIntegration_Timeout

@@ -1,0 +1,11 @@
+2026-05-05
+
+Command:
+go test -race -v ./... -run "Test(AskHuman|Confirm|Choose)"
+
+Result:
+11 passed in 2 packages
+
+Diagnostics:
+- tools.go: clean
+- tools_test.go: clean

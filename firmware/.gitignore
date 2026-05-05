@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+build/
+*.bak
+*.tmp
+config.h
