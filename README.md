@@ -73,17 +73,52 @@ brew install mhrsntrk/ask-master/ask-master
 
 ### Firmware Setup
 
-1. Open `firmware/ask_master/config.h`.
-2. Edit WiFi credentials and your computer's local IP:
-   ```cpp
-   #define WIFI_SSID     "YourSSID"
-   #define WIFI_PASSWORD "YourPassword"
-   #define WS_HOST       "192.168.1.X" // Your computer's IP
-   ```
-3. Build and upload using PlatformIO:
-   ```bash
-   pio run -t upload
-   ```
+The firmware supports **on-device configuration** — no need to edit source code. Just flash it and configure WiFi + server IP directly on the Cardputer.
+
+#### Option A: M5Burner (Easiest — No Build Required)
+
+1. Download and install [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/introduction)
+2. Search for `ask-master` in the **User Custom** tab
+3. Select your device (Cardputer ADV) and click **Burn**
+4. After flashing, the device **automatically scans for WiFi networks** and shows a list:
+   - Select your network by pressing **1-6**
+   - Press **R** to rescan if your network isn't visible
+   - Enter your **WiFi Password**
+   - Enter your computer's **IP address**
+   - Confirm the settings
+
+#### Option B: M5Launcher (OTA — No PC Required After Initial Setup)
+
+1. Install [M5Launcher](https://github.com/bmorcelli/Launcher) on your Cardputer
+2. Open M5Launcher → **OTA** → Search `ask-master`
+3. Install over Wi-Fi
+4. Configure on-device as described above
+
+#### Option C: Build from Source (PlatformIO)
+
+```bash
+cd firmware/ask_master
+pio run -t upload
+```
+
+After flashing, the device enters setup mode automatically:
+1. **Scans for WiFi networks** — select yours by number
+2. Enter your **WiFi Password**
+3. Enter your computer's **IP address**
+4. Confirm the settings
+
+To reconfigure later, press **S** on the idle screen.
+
+#### Building a Merged Binary for Distribution
+
+To create a single `.bin` for M5Burner v3:
+
+```bash
+cd firmware/ask_master
+./merge_bin.sh
+```
+
+This produces `ask-master-cardputer.bin` which you can upload to M5Burner.
 
 ## Configuration
 
