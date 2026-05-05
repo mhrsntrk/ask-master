@@ -1,0 +1,51 @@
+name: Build Firmware
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: |
+          pip install platformio
+
+      - name: Build firmware
+        working-directory: firmware/ask_master
+        run: |
+          pio run -e m5stack-cardputer
+
+      - name: Install esptool
+        run: |
+          pip install esptool
+
+      - name: Merge binaries
+        working-directory: firmware/ask_master
+        run: |
+          esptool.py --chip esp32s3 merge_bin \
+            -o ask-master-cardputer.bin \
+            --flash_mode dio \
+            --flash_size 8MB \
+            0x0000 .pio/build/m5stack-cardputer/bootloader.bin \
+            0x8000 .pio/build/m5stack-cardputer/partitions.bin \
+            0x10000 .pio/build/m5stack-cardputer/firmware.bin
+          ls -lh ask-master-cardputer.bin
+
+      - name: Upload firmware to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: firmware/ask_master/ask-master-cardputer.bin
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

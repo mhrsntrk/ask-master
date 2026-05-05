@@ -259,3 +259,57 @@ void drawChooseScreen(const char* question, const char* context, const String op
     
     canvas.pushSprite(0, 0);
 }
+
+void drawNetworkListScreen(const String networks[], int networkCount, int8_t rssi[]) {
+    initCanvasIfNeeded();
+    int dw = M5Cardputer.Display.width();
+    int dh = M5Cardputer.Display.height();
+    
+    canvas.fillSprite(BLACK);
+    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 80, 160));
+    
+    canvas.setTextColor(WHITE);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString("WiFi NETWORKS", dw / 2, 10);
+    
+    int y = 25;
+    canvas.setTextDatum(top_left);
+    for (int i = 0; i < networkCount && i < 6; i++) {
+        const char* ssid = networks[i].c_str();
+        int nameWidth = canvas.textWidth(ssid);
+        int maxNameWidth = dw - 50;
+        
+        canvas.setTextColor(TFT_CYAN);
+        canvas.setCursor(5, y);
+        canvas.printf("%d.", i + 1);
+        
+        canvas.setTextColor(TFT_WHITE);
+        if (nameWidth > maxNameWidth) {
+            char truncated[24];
+            strncpy(truncated, ssid, sizeof(truncated) - 1);
+            truncated[sizeof(truncated) - 1] = '\0';
+            truncated[20] = '.';
+            truncated[21] = '.';
+            truncated[22] = '.';
+            truncated[23] = '\0';
+            canvas.drawString(truncated, 22, y);
+        } else {
+            canvas.drawString(ssid, 22, y);
+        }
+        
+        canvas.setTextColor(TFT_GREEN);
+        int8_t signal = rssi[i];
+        if (signal < -70) canvas.setTextColor(TFT_RED);
+        else if (signal < -60) canvas.setTextColor(TFT_YELLOW);
+        canvas.setCursor(dw - 35, y);
+        canvas.printf("%ddBm", signal);
+        
+        y += canvas.fontHeight() + 2;
+    }
+    
+    canvas.setTextColor(TFT_LIGHTGREY);
+    canvas.setTextDatum(bottom_center);
+    canvas.drawString("1-6 Select  [R] Rescan", dw / 2, dh - 5);
+    
+    canvas.pushSprite(0, 0);
+}

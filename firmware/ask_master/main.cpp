@@ -16,7 +16,8 @@ enum State {
 };
 
 enum SetupStep {
-    SETUP_SSID,
+    SETUP_SCANNING,
+    SETUP_SELECT_NETWORK,
     SETUP_PASSWORD,
     SETUP_SERVER_IP,
     SETUP_SERVER_PORT,
@@ -26,7 +27,7 @@ enum SetupStep {
 static constexpr const char* APP_VERSION = "ask-master v0.1";
 
 State currentState = CONNECTING;
-SetupStep setupStep = SETUP_SSID;
+SetupStep setupStep = SETUP_SCANNING;
 bool inSetupMode = false;
 ConfigManager configManager;
 WSClient wsClient;
@@ -37,6 +38,11 @@ String currentContext;
 String currentOptions[6];
 int currentOptionCount = 0;
 String currentType;
+
+String scannedNetworks[6];
+int8_t scannedRSSI[6];
+int scannedNetworkCount = 0;
+bool networkScanComplete = false;
 
 void onWSMessage(const String& message);
 void onWSConnect();
@@ -75,14 +81,44 @@ void loop() {
     handleKeyboard();
 }
 
+void scanNetworks() {
+    networkScanComplete = false;
+    scannedNetworkCount = 0;
+    drawSetupScreen("Scanning...", "Looking for WiFi networks", "");
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);
+    int n = WiFi.scanNetworks();
+    if (n > 0) {
+        for (int i = 0; i < n && scannedNetworkCount < 6; i++) {
+            String ssid = WiFi.SSID(i);
+            bool duplicate = false;
+            for (int j = 0; j < scannedNetworkCount; j++) {
+                if (scannedNetworks[j] == ssid) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate && ssid.length() > 0) {
+                scannedNetworks[scannedNetworkCount] = ssid;
+                scannedRSSI[scannedNetworkCount] = WiFi.RSSI(i);
+                scannedNetworkCount++;
+            }
+        }
+    }
+    networkScanComplete = true;
+    setupStep = SETUP_SELECT_NETWORK;
+    drawNetworkListScreen(scannedNetworks, scannedNetworkCount, scannedRSSI);
+    M5Cardputer.Speaker.tone(BEEP_FREQ_CHOOSE, BEEP_DURATION_MS);
+}
+
 void runSetupFlow() {
     inSetupMode = true;
     currentState = CONFIGURING;
-    setupStep = SETUP_SSID;
+    setupStep = SETUP_SCANNING;
     inputBuffer[0] = '\0';
     inputLength = 0;
-    drawSetupScreen("WiFi Network Name (SSID)", "Type your WiFi name", inputBuffer);
-    M5Cardputer.Speaker.tone(BEEP_FREQ_ASK, BEEP_DURATION_MS);
+    scanNetworks();
 }
 
 void saveSetupAndConnect() {
@@ -269,6 +305,31 @@ void handleSetupKeyboard() {
 
     Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
 
+    if (setupStep == SETUP_SCANNING) {
+        return;
+    }
+
+    if (setupStep == SETUP_SELECT_NETWORK) {
+        for (char c : status.word) {
+            if (c == 'r' || c == 'R') {
+                scanNetworks();
+                return;
+            }
+            if (c >= '1' && c <= '6') {
+                int choice = c - '0';
+                if (choice <= scannedNetworkCount) {
+                    configManager.setWiFiSSID(scannedNetworks[choice - 1].c_str());
+                    setupStep = SETUP_PASSWORD;
+                    inputBuffer[0] = '\0';
+                    inputLength = 0;
+                    drawSetupScreen("WiFi Password", scannedNetworks[choice - 1].c_str(), inputBuffer);
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
     if (setupStep == SETUP_CONFIRM) {
         for (char c : status.word) {
             if (c == 'y' || c == 'Y') {
@@ -297,13 +358,6 @@ void handleSetupKeyboard() {
 
     if (status.enter && inputLength > 0) {
         switch (setupStep) {
-            case SETUP_SSID:
-                configManager.setWiFiSSID(inputBuffer);
-                setupStep = SETUP_PASSWORD;
-                inputBuffer[0] = '\0';
-                inputLength = 0;
-                drawSetupScreen("WiFi Password", "Type your WiFi password", inputBuffer);
-                break;
             case SETUP_PASSWORD:
                 configManager.setWiFiPassword(inputBuffer);
                 setupStep = SETUP_SERVER_IP;
@@ -338,13 +392,9 @@ void handleSetupKeyboard() {
     const char* label = "";
     const char* context = "";
     switch (setupStep) {
-        case SETUP_SSID:
-            label = "WiFi Network Name (SSID)";
-            context = "Type your WiFi name";
-            break;
         case SETUP_PASSWORD:
             label = "WiFi Password";
-            context = "Type your WiFi password";
+            context = configManager.getWiFiSSID();
             break;
         case SETUP_SERVER_IP:
             label = "Server IP Address";
