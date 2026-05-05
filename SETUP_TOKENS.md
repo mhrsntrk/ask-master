@@ -9,7 +9,17 @@ The `ask-master` repository has two automated workflows that require GitHub toke
 1. **Skill Sync Workflow** — Syncs `skill/SKILL.md` to the `ask-master-skill` repository
 2. **GoReleaser Workflow** — Builds binaries and publishes to Homebrew tap when you push a tag
 
-Both workflows need separate PATs with `repo` scope to push to their respective repositories.
+Both workflows need separate fine-grained PATs with repository-level access to push to their respective repositories.
+
+---
+
+## Why Fine-Grained Tokens?
+
+This guide uses **fine-grained personal access tokens** instead of classic tokens. They are more secure because they:
+- Only work on specific repositories you choose
+- Have limited, explicit permissions (e.g., just "Contents: write")
+- Have built-in expiration dates (90 days max)
+- Are easier to rotate and audit
 
 ---
 
@@ -21,17 +31,19 @@ When you push changes to `skill/SKILL.md` on the `master` branch, a GitHub Actio
 
 ### Step-by-step setup
 
-#### Step 1: Generate the PAT
+#### Step 1: Generate the Fine-Grained PAT
 
-1. Go to https://github.com/settings/tokens
-2. Click **"Generate new token (classic)"** (not fine-grained)
-3. Give it a descriptive name, e.g., `ask-master-skill-sync`
-4. Set expiration (recommend: 90 days or 1 year)
-5. Under **scopes**, check:
-   - ✅ `repo` — Full control of private repositories
-     - This automatically grants `repo:status`, `repo_deployment`, `public_repo`, `repo:invite`, `security_events`
-6. Scroll down and click **"Generate token"**
-7. **COPY THE TOKEN IMMEDIATELY** — you won't see it again
+1. Go to https://github.com/settings/personal-access-tokens/new
+2. Give it a descriptive name, e.g., `ask-master-skill-sync`
+3. Set expiration (max 90 days — GitHub enforces this for fine-grained tokens)
+4. Under **Resource owner**, select `mhrsntrk`
+5. Under **Repository access**, select **"Only select repositories"** and choose:
+   - `mhrsntrk/ask-master-skill`
+6. Under **Repository permissions**, expand **"Contents"** and set it to:
+   - ✅ **Read and write** — to push the updated `SKILL.md`
+7. Under **Account permissions**, leave everything at **"No access"**
+8. Scroll down and click **"Generate token"**
+9. **COPY THE TOKEN IMMEDIATELY** — you won't see it again
 
 #### Step 2: Add it as a repository secret
 
@@ -39,7 +51,7 @@ When you push changes to `skill/SKILL.md` on the `master` branch, a GitHub Actio
 2. Click **"New repository secret"**
 3. Fill in:
    - **Name**: `SKILL_REPO_PAT`
-   - **Value**: paste the token you just copied
+   - **Value**: paste the fine-grained token you just copied
 4. Click **"Add secret"**
 
 #### Step 3: Test it
@@ -70,16 +82,21 @@ brew install mhrsntrk/ask-master/ask-master
 
 ### Step-by-step setup
 
-#### Step 1: Generate the PAT
+#### Step 1: Generate the Fine-Grained PAT
 
-1. Go to https://github.com/settings/tokens
-2. Click **"Generate new token (classic)"**
-3. Give it a descriptive name, e.g., `ask-master-homebrew-release`
-4. Set expiration (recommend: 90 days or 1 year)
-5. Under **scopes**, check:
-   - ✅ `repo` — Full control of private repositories
-6. Scroll down and click **"Generate token"**
-7. **COPY THE TOKEN IMMEDIATELY**
+1. Go to https://github.com/settings/personal-access-tokens/new
+2. Give it a descriptive name, e.g., `ask-master-homebrew-release`
+3. Set expiration (max 90 days)
+4. Under **Resource owner**, select `mhrsntrk`
+5. Under **Repository access**, select **"Only select repositories"** and choose:
+   - `mhrsntrk/ask-master`
+   - `mhrsntrk/homebrew-ask-master`
+6. Under **Repository permissions**, set the following:
+   - **Contents**: ✅ **Read and write** — to read release notes and push Homebrew formula
+   - **Metadata**: ✅ **Read-only** (GitHub selects this automatically)
+7. Under **Account permissions**, leave everything at **"No access"**
+8. Scroll down and click **"Generate token"**
+9. **COPY THE TOKEN IMMEDIATELY**
 
 #### Step 2: Add it as a repository secret
 
@@ -87,7 +104,7 @@ brew install mhrsntrk/ask-master/ask-master
 2. Click **"New repository secret"**
 3. Fill in:
    - **Name**: `HOMEBREW_GITHUB_API_TOKEN`
-   - **Value**: paste the token you just copied
+   - **Value**: paste the fine-grained token you just copied
 4. Click **"Add secret"**
 
 #### Step 3: Install GoReleaser (local)
@@ -134,22 +151,38 @@ ask-master --version
 
 ---
 
+## Fine-Grained Token Summary
+
+| Token | Target Repos | Required Permission |
+|-------|--------------|---------------------|
+| **SKILL_REPO_PAT** | `mhrsntrk/ask-master-skill` | Contents: **Read and write** |
+| **HOMEBREW_GITHUB_API_TOKEN** | `mhrsntrk/ask-master` + `mhrsntrk/homebrew-ask-master` | Contents: **Read and write** |
+
+**Never grant account-level permissions.** Keep everything at "No access" except the specific repository permissions listed above.
+
+---
+
 ## Troubleshooting
 
 ### "Resource not accessible by personal access token"
 
-The PAT likely expired or doesn't have `repo` scope. Generate a new one.
+The PAT likely expired, or the token doesn't have access to the target repository. Common causes:
+- Token expired (fine-grained tokens max 90 days)
+- Wrong repository selected during token creation
+- Missing "Contents: Read and write" permission
+
+**Fix:** Go to https://github.com/settings/personal-access-tokens, find the token, click **"Edit"**, verify the repositories and permissions, and regenerate if needed.
 
 ### "Could not resolve to a Repository"
 
-Make sure the repository names in the workflow files match exactly:
-- For skill sync: `mhrsntrk/ask-master-skill`
-- For homebrew: `mhrsntrk/homebrew-ask-master`
+The token doesn't have access to the repository it's trying to push to. Make sure:
+- For skill sync: the token has access to `mhrsntrk/ask-master-skill`
+- For homebrew: the token has access to `mhrsntrk/homebrew-ask-master`
 
 ### Workflow runs but skill repo doesn't update
 
 Check the Action logs. Common issues:
-- The PAT doesn't have write access to the skill repo
+- The PAT has read-only access instead of read-and-write
 - The branch name is `master` not `main` (the workflow only triggers on `master` or `main` pushes to `skill/SKILL.md`)
 
 ### GoReleaser fails with "already exists"
@@ -160,31 +193,34 @@ If you re-run a release for an existing tag, GoReleaser might fail because the G
 
 Check that:
 1. The `HOMEBREW_GITHUB_API_TOKEN` secret is set correctly
-2. The `homebrew-ask-master` repo exists and is public
-3. The GoReleaser workflow completed successfully
+2. The token has access to both `ask-master` and `homebrew-ask-master`
+3. The `homebrew-ask-master` repo exists and is public
+4. The GoReleaser workflow completed successfully
 
 ---
 
 ## Security Notes
 
 - **Never commit tokens to git** — always use repository secrets
-- **Use classic PATs** — the workflows expect `repo` scope which is simpler with classic tokens
-- **Rotate tokens regularly** — set expiration dates and regenerate before they expire
-- **Scope the tokens** — these tokens only need `repo` access, don't grant unnecessary scopes
-- **Monitor usage** — check your token activity at https://github.com/settings/tokens periodically
+- **Use fine-grained tokens** — they are scoped to specific repos and permissions
+- **Rotate tokens regularly** — set expiration dates and regenerate before they expire (max 90 days for fine-grained)
+- **Scope the tokens** — these tokens only need "Contents: Read and write" on specific repos
+- **Monitor usage** — check your token activity at https://github.com/settings/personal-access-tokens periodically
+- **Delete unused tokens** — if you stop using a workflow, delete its token
 
 ---
 
 ## Quick Reference
 
-| Token | Workflow | Repo | Scope | URL |
-|-------|----------|------|-------|-----|
-| `SKILL_REPO_PAT` | Sync Skill | `mhrsntrk/ask-master-skill` | `repo` | Settings → Secrets → Actions |
-| `HOMEBREW_GITHUB_API_TOKEN` | GoReleaser | `mhrsntrk/homebrew-ask-master` | `repo` | Settings → Secrets → Actions |
+| Token | Workflow | Target Repo(s) | Permission | URL |
+|-------|----------|----------------|------------|-----|
+| `SKILL_REPO_PAT` | Sync Skill | `mhrsntrk/ask-master-skill` | Contents: Read and write | Settings → Secrets → Actions |
+| `HOMEBREW_GITHUB_API_TOKEN` | GoReleaser | `mhrsntrk/ask-master` + `mhrsntrk/homebrew-ask-master` | Contents: Read and write | Settings → Secrets → Actions |
 
-| Secret URL | Location |
-|------------|----------|
-| Token generation | https://github.com/settings/tokens |
+| Action | URL |
+|--------|-----|
+| Generate fine-grained token | https://github.com/settings/personal-access-tokens/new |
+| Manage existing tokens | https://github.com/settings/personal-access-tokens |
 | Add secret to ask-master | https://github.com/mhrsntrk/ask-master/settings/secrets/actions |
 | View workflow runs | https://github.com/mhrsntrk/ask-master/actions |
 | Check skill repo | https://github.com/mhrsntrk/ask-master-skill |
@@ -194,9 +230,9 @@ Check that:
 
 ## After Setup Checklist
 
-- [ ] Generated `SKILL_REPO_PAT` with `repo` scope
+- [ ] Generated `SKILL_REPO_PAT` (fine-grained, Contents: Read and write, repo: `ask-master-skill`)
 - [ ] Added `SKILL_REPO_PAT` to `ask-master` repo secrets
-- [ ] Generated `HOMEBREW_GITHUB_API_TOKEN` with `repo` scope
+- [ ] Generated `HOMEBREW_GITHUB_API_TOKEN` (fine-grained, Contents: Read and write, repos: `ask-master` + `homebrew-ask-master`)
 - [ ] Added `HOMEBREW_GITHUB_API_TOKEN` to `ask-master` repo secrets
 - [ ] Installed GoReleaser locally (`brew install goreleaser/tap/goreleaser`)
 - [ ] Tested skill sync with a dummy commit to `skill/SKILL.md`
