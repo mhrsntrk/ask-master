@@ -242,13 +242,15 @@ void handleKeyboard() {
         return;
     }
 
-    if (currentState == IDLE) {
+    // Allow 'S' key to enter setup from IDLE or CONNECTING states
+    if (currentState == IDLE || currentState == CONNECTING) {
         if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) {
             return;
         }
         Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
         for (char c : status.word) {
             if (c == 's' || c == 'S') {
+                WiFi.disconnect();
                 configManager.clear();
                 runSetupFlow();
                 return;
