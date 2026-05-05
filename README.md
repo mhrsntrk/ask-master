@@ -56,7 +56,13 @@ So if the name offends you, I fully support your right to be offended. I also su
 
 ## Quick Start
 
-### Server Setup
+### macOS (Homebrew)
+
+```bash
+brew install mhrsntrk/ask-master/ask-master
+```
+
+### Linux / Windows / Build from Source
 
 1. Build the Go server:
    ```bash
