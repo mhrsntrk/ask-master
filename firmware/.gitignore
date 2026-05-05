@@ -3,4 +3,3 @@
 build/
 *.bak
 *.tmp
-config.h
