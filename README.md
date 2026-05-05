@@ -186,3 +186,21 @@ Add to your Windsurf rules or instructions settings:
 Always try chat first. If no reply within 120 seconds, escalate the question to my physical Cardputer using the ask-master MCP server.
 ```
 
+## Skill
+
+A dedicated skill is available at [mhrsntrk/ask-master-skill](https://github.com/mhrsntrk/ask-master-skill) for AI agents. Install it with:
+
+```bash
+npx skills add mhrsntrk/ask-master-skill
+```
+
+## Development
+
+### Syncing the Skill
+
+The `skill/SKILL.md` file is automatically synced to the [ask-master-skill](https://github.com/mhrsntrk/ask-master-skill) repository via GitHub Actions when changes are pushed to `master`.
+
+**Setup required:**
+1. Create a Personal Access Token (PAT) at https://github.com/settings/tokens with `repo` scope
+2. Add it as a repository secret named `SKILL_REPO_PAT` at https://github.com/mhrsntrk/ask-master/settings/secrets/actions
+
