@@ -1,0 +1,59 @@
+project_name: ask-master
+
+builds:
+  - id: ask-master
+    main: .
+    binary: ask-master
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  replace_existing_artifacts: true
+
+brews:
+  - name: ask-master
+    homepage: https://github.com/mhrsntrk/ask-master
+    description: "Physical Human-in-the-Loop MCP server for AI coding agents using M5Stack Cardputer"
+    license: MIT
+    directory: Formula
+    repository:
+      owner: mhrsntrk
+      name: homebrew-ask-master
+      token: "{{ .Env.HOMEBREW_GITHUB_API_TOKEN }}"
+    test: |
+      system "#{bin}/ask-master", "--version"
