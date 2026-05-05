@@ -78,7 +78,7 @@ The firmware supports **on-device configuration** — no need to edit source cod
 #### Option A: M5Burner (Easiest — No Build Required)
 
 1. Download and install [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/introduction)
-2. Search for `ask-master` in the **User Custom** tab
+2. Enter share code **`KXgpvtfPA52RKfQK`** in the **User Custom** tab, or search for `ask-master`
 3. Select your device (Cardputer ADV) and click **Burn**
 4. After flashing, the device **automatically scans for WiFi networks** and shows a list:
    - Select your network by pressing **1-6**
