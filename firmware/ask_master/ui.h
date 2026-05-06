@@ -11,5 +11,6 @@ void drawAskScreen(const char* question, const char* context, const char* inputB
 void drawEscalateScreen(const char* question, const char* context, const char* inputBuffer);
 void drawConfirmScreen(const char* statement, const char* consequence);
 void drawChooseScreen(const char* question, const char* context, const String options[], int optionCount);
+void drawSleepScreen();
 
 #endif // UI_H

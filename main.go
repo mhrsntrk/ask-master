@@ -10,47 +10,66 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-var version = "dev"
+var version = "v1.2.0"
 
 func main() {
-	// 2. Parse config
 	cfg := ParseConfig()
-
-	// 4. Setup logger
 	SetupLogger(cfg.LogLevel)
 	logger := slog.Default()
 
-	// 5. Create bridge
+	// If a daemon is already running, proxy stdio to it.
+	if isDaemonRunning() {
+		logger.Info("daemon detected, running in client mode")
+		if err := runClientMode(logger); err != nil {
+			logger.Error("client mode failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// First instance: become the daemon.
+	if err := writeLockFile(); err != nil {
+		logger.Error("failed to write lock file", "error", err)
+		os.Exit(1)
+	}
+	defer removeLockFile()
+
 	bridge := NewBridge(logger)
 
-	// 6. Start bridge goroutine
+	if err := bridge.StartUDP(); err != nil {
+		logger.Error("UDP listener failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("UDP beacon listener started", "port", udpBeaconPort)
+
 	go func() {
-		if err := bridge.Start(cfg.WSAddr); err != nil {
+		if err := bridge.StartWS(cfg.WSAddr); err != nil {
 			logger.Error("bridge server failed", "error", err)
 		}
 	}()
 
-	// 7. Create MCP server
+	daemon := NewDaemon(bridge, logger)
+	if err := daemon.Start(); err != nil {
+		logger.Error("daemon failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("daemon started", "socket", socketPath)
+
 	s := server.NewMCPServer("ask-master", version,
 		server.WithToolCapabilities(true),
 		server.WithRecovery(),
 	)
-
-	// 8. Register tools
 	RegisterTools(s, bridge, logger)
 
-	// 9. Handle OS signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 10. Start serving in a goroutine so we can wait for signals or stdin closure
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 
 		stdioServer := server.NewStdioServer(s)
-
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := contextWithCancel(logger)
 		defer cancel()
 
 		sigChanInternal := make(chan os.Signal, 1)
@@ -65,7 +84,6 @@ func main() {
 		}
 	}()
 
-	// Wait for signal or MCP server to exit (e.g. stdin closed)
 	select {
 	case <-sigChan:
 		logger.Info("shutting down due to signal")
@@ -73,10 +91,13 @@ func main() {
 		logger.Info("shutting down due to stdin closure")
 	}
 
-	// 11. Call bridge.Shutdown()
 	if err := bridge.Shutdown(); err != nil {
 		logger.Error("bridge shutdown failed", "error", err)
 	}
 
 	logger.Info("shutdown complete")
+}
+
+func contextWithCancel(logger *slog.Logger) (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
 }

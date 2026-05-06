@@ -59,5 +59,10 @@ brews:
       owner: mhrsntrk
       name: homebrew-ask-master
       token: "{{ .Env.HOMEBREW_GITHUB_API_TOKEN }}"
+    service: |
+      run [opt_bin/"ask-master", "--ws-addr", "0.0.0.0:8765"]
+      keep_alive true
+      log_path var/"log/ask-master.log"
+      error_log_path var/"log/ask-master.error.log"
     test: |
       system "#{bin}/ask-master", "--version"

@@ -323,6 +323,8 @@ func connectTestClient(t *testing.T, bridge *Bridge) *websocket.Conn {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	bridge.presence.Update("127.0.0.1")
+
 	t.Cleanup(func() {
 		_ = client.Close()
 	})

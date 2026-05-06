@@ -1,12 +1,17 @@
 #include <Arduino.h>
 #include <M5Cardputer.h>
+#include <WiFiUdp.h>
 #include "config.h"
 #include "config_manager.h"
 #include "ui.h"
 #include "ws_client.h"
 #include <ArduinoJson.h>
 
+#define DEBUG_SERIAL
+
 enum State {
+    SLEEP,
+    WAKE,
     CONNECTING,
     IDLE,
     RENDERING,
@@ -24,13 +29,21 @@ enum SetupStep {
     SETUP_CONFIRM
 };
 
-static constexpr const char* APP_VERSION = "ask-master v0.1";
+static constexpr const char* APP_VERSION = "ask-master v1.2.0";
+static constexpr int UDP_BEACON_PORT = 8766;
+static constexpr unsigned long BEACON_INTERVAL_MS = 30000;
+static constexpr unsigned long WS_IDLE_TIMEOUT_MS = 30000;
+static constexpr unsigned long WAKE_TIMEOUT_MS = 10000;
+static constexpr const char* BEACON_PACKET = "ask-master-ping";
+static constexpr const char* WAKE_PACKET = "ask-master-wake";
 
-State currentState = CONNECTING;
+State currentState = SLEEP;
 SetupStep setupStep = SETUP_SCANNING;
 bool inSetupMode = false;
+bool pendingSetup = false;
 ConfigManager configManager;
 WSClient wsClient;
+WiFiUDP udp;
 char inputBuffer[81] = {0};
 int inputLength = 0;
 String currentQuestion;
@@ -43,6 +56,10 @@ String scannedNetworks[6];
 int8_t scannedRSSI[6];
 int scannedNetworkCount = 0;
 bool networkScanComplete = false;
+
+unsigned long lastBeaconTime = 0;
+unsigned long wsConnectTime = 0;
+unsigned long lastActivityTime = 0;
 
 void onWSMessage(const String& message);
 void onWSConnect();
@@ -57,38 +74,186 @@ void drawIdle();
 void runSetupFlow();
 void saveSetupAndConnect();
 void startNormalOperation();
+void enterSetupMode();
+void sendBeacon();
+void checkUDPPackets();
+void transitionToSleep();
+void transitionToWake();
+
+#ifdef DEBUG_SERIAL
+  #define DBG(...) Serial.println(__VA_ARGS__)
+#else
+  #define DBG(...)
+#endif
 
 void setup() {
+    #ifdef DEBUG_SERIAL
+    Serial.begin(115200);
+    delay(500);
+    #endif
+
+    DBG("=== ask-master boot ===");
+
     auto cfg = M5.config();
     M5Cardputer.begin(cfg, true);
     M5Cardputer.Display.setRotation(1);
 
-    drawConnectingScreen();
+    drawSleepScreen();
 
     configManager.begin();
     bool hasConfig = configManager.load();
 
+    DBG("hasConfig: " + String(hasConfig));
+    DBG("SSID: " + String(configManager.getWiFiSSID()));
+    DBG("IP: " + String(configManager.getServerIP()));
+
     if (!hasConfig) {
+        DBG("No config, entering setup");
         runSetupFlow();
     } else {
-        startNormalOperation();
+        DBG("Starting normal operation");
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(configManager.getWiFiSSID(), configManager.getWiFiPassword());
+        udp.begin(UDP_BEACON_PORT);
+        lastBeaconTime = millis();
+        drawSleepScreen();
     }
 }
 
 void loop() {
     M5Cardputer.update();
-    wsClient.loop();
+
+    if (pendingSetup) {
+        pendingSetup = false;
+        enterSetupMode();
+        return;
+    }
+
+    if (inSetupMode) {
+        handleKeyboard();
+        return;
+    }
+
+    checkUDPPackets();
+
+    if (currentState == SLEEP) {
+        if (WiFi.status() != WL_CONNECTED) {
+            drawConnectingScreen();
+            delay(500);
+            return;
+        }
+
+        if (millis() - lastBeaconTime > BEACON_INTERVAL_MS) {
+            lastBeaconTime = millis();
+            sendBeacon();
+        }
+
+        handleKeyboard();
+        return;
+    }
+
+    if (currentState == WAKE || currentState == CONNECTING || currentState == IDLE) {
+        wsClient.loop();
+
+        if (currentState == IDLE) {
+            if (millis() - lastActivityTime > WS_IDLE_TIMEOUT_MS) {
+                DBG("WS idle timeout, sleeping");
+                transitionToSleep();
+                return;
+            }
+        }
+
+        if (currentState == WAKE && millis() - wsConnectTime > WAKE_TIMEOUT_MS) {
+            DBG("Wake timeout, sleeping");
+            transitionToSleep();
+            return;
+        }
+    }
+
     handleKeyboard();
+}
+
+void transitionToSleep() {
+    wsClient.disconnect();
+    currentState = SLEEP;
+    lastBeaconTime = millis();
+    drawSleepScreen();
+}
+
+void transitionToWake() {
+    currentState = WAKE;
+    wsConnectTime = millis();
+    lastActivityTime = millis();
+    drawConnectingScreen();
+
+    wsClient.disconnect();
+    wsClient.begin(configManager.getServerIP(), configManager.getServerPort());
+    wsClient.onMessage(onWSMessage);
+    wsClient.onConnect(onWSConnect);
+    wsClient.onDisconnect(onWSDisconnect);
+}
+
+void sendBeacon() {
+    if (WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+
+    IPAddress serverIP;
+    serverIP.fromString(configManager.getServerIP());
+    if (serverIP == IPAddress(0, 0, 0, 0)) {
+        return;
+    }
+
+    udp.beginPacket(serverIP, UDP_BEACON_PORT);
+    udp.write((const uint8_t*)BEACON_PACKET, strlen(BEACON_PACKET));
+    udp.endPacket();
+    DBG("Beacon sent to " + String(configManager.getServerIP()));
+}
+
+void checkUDPPackets() {
+    if (WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+
+    int packetSize = udp.parsePacket();
+    if (packetSize == 0) {
+        return;
+    }
+
+    char buffer[64];
+    int len = udp.read(buffer, sizeof(buffer) - 1);
+    if (len > 0) {
+        buffer[len] = '\0';
+        String msg = String(buffer);
+        msg.trim();
+        DBG("UDP received: " + msg);
+
+        if (msg == WAKE_PACKET && currentState == SLEEP) {
+            DBG("Wake packet received, connecting WS");
+            transitionToWake();
+        }
+    }
+}
+
+void enterSetupMode() {
+    DBG("Entering setup mode");
+    wsClient.disconnect();
+    WiFi.disconnect();
+    udp.stop();
+    configManager.clear();
+    runSetupFlow();
 }
 
 void scanNetworks() {
     networkScanComplete = false;
     scannedNetworkCount = 0;
     drawSetupScreen("Scanning...", "Looking for WiFi networks", "");
+    DBG("Scanning WiFi...");
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
     delay(100);
     int n = WiFi.scanNetworks();
+    DBG("Found " + String(n) + " networks");
     if (n > 0) {
         for (int i = 0; i < n && scannedNetworkCount < 6; i++) {
             String ssid = WiFi.SSID(i);
@@ -103,6 +268,7 @@ void scanNetworks() {
                 scannedNetworks[scannedNetworkCount] = ssid;
                 scannedRSSI[scannedNetworkCount] = WiFi.RSSI(i);
                 scannedNetworkCount++;
+                DBG("  " + String(i) + ": " + ssid + " (" + String(WiFi.RSSI(i)) + " dBm)");
             }
         }
     }
@@ -124,55 +290,22 @@ void runSetupFlow() {
 void saveSetupAndConnect() {
     configManager.save();
     inSetupMode = false;
-    currentState = CONNECTING;
-    drawConnectingScreen();
-    startNormalOperation();
-}
-
-void startNormalOperation() {
+    currentState = SLEEP;
+    WiFi.mode(WIFI_STA);
     WiFi.begin(configManager.getWiFiSSID(), configManager.getWiFiPassword());
-    int wifiTimeout = 0;
-    const int maxWifiTimeout = 30; // 30 * 500ms = 15 seconds
-
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        drawConnectingScreen();
-        wifiTimeout++;
-
-        // Check for 'S' key to enter setup during connection
-        M5Cardputer.update();
-        if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
-            Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
-            for (char c : status.word) {
-                if (c == 's' || c == 'S') {
-                    WiFi.disconnect();
-                    configManager.clear();
-                    runSetupFlow();
-                    return;
-                }
-            }
-        }
-
-        if (wifiTimeout >= maxWifiTimeout) {
-            WiFi.disconnect();
-            configManager.clear();
-            runSetupFlow();
-            return;
-        }
-    }
-
-    wsClient.begin(configManager.getServerIP(), configManager.getServerPort());
-    wsClient.onMessage(onWSMessage);
-    wsClient.onConnect(onWSConnect);
-    wsClient.onDisconnect(onWSDisconnect);
-
-    currentState = IDLE;
-    drawIdle();
+    udp.begin(UDP_BEACON_PORT);
+    lastBeaconTime = millis();
+    drawSleepScreen();
 }
 
 void onWSMessage(const String& message) {
-    if (currentState != IDLE) {
+    if (currentState == CONFIGURING || currentState == SENDING || currentState == RENDERING || currentState == WAITING_INPUT) {
         return;
+    }
+
+    if (currentState == WAKE || currentState == CONNECTING) {
+        currentState = IDLE;
+        lastActivityTime = millis();
     }
 
     JsonDocument doc;
@@ -210,18 +343,21 @@ void onWSMessage(const String& message) {
     }
 
     currentState = WAITING_INPUT;
+    lastActivityTime = millis();
 }
 
 void onWSConnect() {
-    clearCurrentPrompt();
+    DBG("WebSocket CONNECTED");
     currentState = IDLE;
+    lastActivityTime = millis();
     drawIdle();
 }
 
 void onWSDisconnect() {
-    clearCurrentPrompt();
-    currentState = CONNECTING;
-    drawConnectingScreen();
+    DBG("WebSocket DISCONNECTED");
+    if (currentState != CONFIGURING) {
+        transitionToSleep();
+    }
 }
 
 void renderCurrentScreen() {
@@ -242,17 +378,36 @@ void handleKeyboard() {
         return;
     }
 
-    // Allow 'S' key to enter setup from IDLE or CONNECTING states
-    if (currentState == IDLE || currentState == CONNECTING) {
+    if (currentState == SLEEP) {
+        if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) {
+            return;
+        }
+        Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
+        for (char c : status.word) {
+            DBG("Key: " + String(c));
+            if (c == 's' || c == 'S') {
+                DBG("S pressed, entering setup");
+                pendingSetup = true;
+                return;
+            }
+            if (c == ' ' || c == 'w' || c == 'W') {
+                DBG("Wake key pressed, connecting WS");
+                transitionToWake();
+                return;
+            }
+        }
+        return;
+    }
+
+    if (currentState == IDLE || currentState == CONNECTING || currentState == WAKE) {
         if (!M5Cardputer.Keyboard.isChange() || !M5Cardputer.Keyboard.isPressed()) {
             return;
         }
         Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
         for (char c : status.word) {
             if (c == 's' || c == 'S') {
-                WiFi.disconnect();
-                configManager.clear();
-                runSetupFlow();
+                DBG("S pressed, entering setup");
+                pendingSetup = true;
                 return;
             }
         }
@@ -443,8 +598,8 @@ void sendReply(const String& reply) {
     M5Cardputer.Speaker.tone(BEEP_ANSWER_FREQ, BEEP_ANSWER_DURATION_MS);
 
     clearCurrentPrompt();
-    currentState = IDLE;
-    drawIdle();
+    delay(500);
+    transitionToSleep();
 }
 
 void clearCurrentPrompt() {
@@ -461,7 +616,7 @@ void clearCurrentPrompt() {
 }
 
 void drawConnectingScreen() {
-    drawIdleScreen("Connecting...", "Waiting for WiFi / WS", false);
+    drawIdleScreen("Connecting...", "Waiting for agent...", true);
 }
 
 void drawIdle() {

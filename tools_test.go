@@ -255,6 +255,10 @@ func (s *stubBridge) Connected() bool {
 	return s.err == nil
 }
 
+func (s *stubBridge) DeviceOnline() bool {
+	return s.err == nil
+}
+
 func (s *stubBridge) SendAndWait(payload string, questionType string, options []string, timeout time.Duration) (string, error) {
 	s.payload = payload
 	s.questionType = questionType

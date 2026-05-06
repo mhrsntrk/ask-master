@@ -219,12 +219,18 @@ func jsonPayload(payload map[string]any) (string, error) {
 }
 
 func isBridgeOffline(bridge Bridger, err error) bool {
-	if bridge == nil || !bridge.Connected() {
+	if bridge == nil {
+		return true
+	}
+	if !bridge.DeviceOnline() {
+		return true
+	}
+	if errors.Is(err, errDeviceOffline) {
 		return true
 	}
 	if errors.Is(err, errBridgeDisconnected) {
 		return true
 	}
 	errText := err.Error()
-	return strings.Contains(errText, "not connected") || strings.Contains(errText, "disconnected")
+	return strings.Contains(errText, "not connected") || strings.Contains(errText, "disconnected") || strings.Contains(errText, "offline")
 }

@@ -29,6 +29,10 @@ public:
         return _webSocket.isConnected();
     }
 
+    void disconnect() {
+        _webSocket.disconnect();
+    }
+
     void onMessage(void (*callback)(const String&)) {
         _onMessage = callback;
     }

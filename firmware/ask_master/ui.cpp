@@ -260,6 +260,21 @@ void drawChooseScreen(const char* question, const char* context, const String op
     canvas.pushSprite(0, 0);
 }
 
+void drawSleepScreen() {
+    initCanvasIfNeeded();
+    int dw = M5Cardputer.Display.width();
+    int dh = M5Cardputer.Display.height();
+
+    canvas.fillSprite(BLACK);
+    canvas.setTextDatum(middle_center);
+    canvas.setTextColor(TFT_DARKGREY);
+    canvas.drawString("Sleeping...", dw / 2, dh / 2);
+    canvas.setTextColor(TFT_LIGHTGREY);
+    canvas.setTextDatum(bottom_center);
+    canvas.drawString("[S] Settings  [W] Wake", dw / 2, dh - 5);
+    canvas.pushSprite(0, 0);
+}
+
 void drawNetworkListScreen(const String networks[], int networkCount, int8_t rssi[]) {
     initCanvasIfNeeded();
     int dw = M5Cardputer.Display.width();
