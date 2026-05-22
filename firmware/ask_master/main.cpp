@@ -21,9 +21,12 @@ enum State {
 };
 
 enum SetupStep {
+    SETUP_MENU,
+    SETUP_WIFI_SELECT,
     SETUP_SCANNING,
     SETUP_SELECT_NETWORK,
     SETUP_PASSWORD,
+    SETUP_SERVER_SELECT,
     SETUP_SERVER_IP,
     SETUP_SERVER_PORT,
     SETUP_CONFIRM
@@ -57,9 +60,19 @@ int8_t scannedRSSI[6];
 int scannedNetworkCount = 0;
 bool networkScanComplete = false;
 
+String savedNetworkNames[6];
+int savedNetworkCount = 0;
+String savedServerIPs[6];
+int savedServerPorts[6];
+int savedServerCount = 0;
+
 unsigned long lastBeaconTime = 0;
 unsigned long wsConnectTime = 0;
 unsigned long lastActivityTime = 0;
+unsigned long lastIdleRedraw = 0;
+
+int scrollOffset = 0;
+int maxScrollOffset = 0;
 
 void onWSMessage(const String& message);
 void onWSConnect();
@@ -72,7 +85,9 @@ void clearCurrentPrompt();
 void drawConnectingScreen();
 void drawIdle();
 void runSetupFlow();
+void drawSettingsMenu();
 void saveSetupAndConnect();
+void updateMaxScroll();
 void startNormalOperation();
 void enterSetupMode();
 void sendBeacon();
@@ -161,6 +176,10 @@ void loop() {
                 transitionToSleep();
                 return;
             }
+            if (millis() - lastIdleRedraw > 100) {
+                lastIdleRedraw = millis();
+                drawIdle();
+            }
         }
 
         if (currentState == WAKE && millis() - wsConnectTime > WAKE_TIMEOUT_MS) {
@@ -240,7 +259,6 @@ void enterSetupMode() {
     wsClient.disconnect();
     WiFi.disconnect();
     udp.stop();
-    configManager.clear();
     runSetupFlow();
 }
 
@@ -281,10 +299,10 @@ void scanNetworks() {
 void runSetupFlow() {
     inSetupMode = true;
     currentState = CONFIGURING;
-    setupStep = SETUP_SCANNING;
+    setupStep = SETUP_MENU;
     inputBuffer[0] = '\0';
     inputLength = 0;
-    scanNetworks();
+    drawSettingsMenu();
 }
 
 void saveSetupAndConnect() {
@@ -318,6 +336,8 @@ void onWSMessage(const String& message) {
     currentType = doc["type"].as<String>();
     currentQuestion = doc["question"].as<String>();
     currentContext = doc["context"].as<String>();
+    scrollOffset = 0;
+    maxScrollOffset = 0;
 
     if (currentType == "choose") {
         JsonArray opts = doc["options"].as<JsonArray>();
@@ -330,6 +350,7 @@ void onWSMessage(const String& message) {
     }
 
     currentState = RENDERING;
+    updateMaxScroll();
     renderCurrentScreen();
 
     if (currentType == "ask") {
@@ -362,13 +383,13 @@ void onWSDisconnect() {
 
 void renderCurrentScreen() {
     if (currentType == "ask") {
-        drawAskScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer);
+        drawAskScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer, scrollOffset);
     } else if (currentType == "escalate") {
-        drawEscalateScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer);
+        drawEscalateScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer, scrollOffset);
     } else if (currentType == "confirm") {
-        drawConfirmScreen(currentQuestion.c_str(), currentContext.c_str());
+        drawConfirmScreen(currentQuestion.c_str(), currentContext.c_str(), scrollOffset);
     } else if (currentType == "choose") {
-        drawChooseScreen(currentQuestion.c_str(), currentContext.c_str(), currentOptions, currentOptionCount);
+        drawChooseScreen(currentQuestion.c_str(), currentContext.c_str(), currentOptions, currentOptionCount, scrollOffset);
     }
 }
 
@@ -424,6 +445,25 @@ void handleKeyboard() {
 
     Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
 
+    for (char c : status.word) {
+        if (c == 'u' || c == 'U') {
+            if (scrollOffset > 0) {
+                scrollOffset -= 8;
+                if (scrollOffset < 0) scrollOffset = 0;
+                renderCurrentScreen();
+            }
+            return;
+        }
+        if (c == 'd' || c == 'D') {
+            if (scrollOffset < maxScrollOffset) {
+                scrollOffset += 8;
+                if (scrollOffset > maxScrollOffset) scrollOffset = maxScrollOffset;
+                renderCurrentScreen();
+            }
+            return;
+        }
+    }
+
     if (currentType == "ask" || currentType == "escalate") {
         for (char c : status.word) {
             if (inputLength < 80) {
@@ -442,9 +482,9 @@ void handleKeyboard() {
         }
 
         if (currentType == "ask") {
-            drawAskScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer);
+            drawAskScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer, scrollOffset);
         } else {
-            drawEscalateScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer);
+            drawEscalateScreen(currentQuestion.c_str(), currentContext.c_str(), inputBuffer, scrollOffset);
         }
         return;
     }
@@ -491,6 +531,141 @@ void handleSetupKeyboard() {
         return;
     }
 
+    if (setupStep == SETUP_MENU) {
+        for (char c : status.word) {
+            if (c == '1') {
+                savedNetworkCount = 0;
+                WiFiProfile prof;
+                for (int i = 0; i < MAX_WIFI_PROFILES && savedNetworkCount < 6; i++) {
+                    if (configManager.getWiFiProfile(i, prof)) {
+                        savedNetworkNames[savedNetworkCount] = prof.ssid;
+                        scannedRSSI[savedNetworkCount] = 0;
+                        savedNetworkCount++;
+                    }
+                }
+                if (savedNetworkCount > 0) {
+                    setupStep = SETUP_WIFI_SELECT;
+                    drawWiFiSelectScreen(savedNetworkNames, savedNetworkCount, nullptr, true);
+                } else {
+                    scanNetworks();
+                }
+                return;
+            }
+            if (c == '2') {
+                savedServerCount = 0;
+                ServerProfile prof;
+                for (int i = 0; i < MAX_SERVER_PROFILES && savedServerCount < 6; i++) {
+                    if (configManager.getServerProfile(i, prof)) {
+                        savedServerIPs[savedServerCount] = prof.ip;
+                        savedServerPorts[savedServerCount] = prof.port;
+                        savedServerCount++;
+                    }
+                }
+                if (savedServerCount > 0) {
+                    setupStep = SETUP_SERVER_SELECT;
+                    const char* ipPtrs[6];
+                    for (int i = 0; i < savedServerCount; i++) {
+                        ipPtrs[i] = savedServerIPs[i].c_str();
+                    }
+                    drawServerSelectScreen(ipPtrs, savedServerPorts, savedServerCount);
+                } else {
+                    setupStep = SETUP_SERVER_IP;
+                    inputBuffer[0] = '\0';
+                    inputLength = 0;
+                    if (configManager.getServerIP()[0] != '\0') {
+                        strcpy(inputBuffer, configManager.getServerIP());
+                        inputLength = strlen(inputBuffer);
+                    }
+                    drawSetupScreen("Server IP Address", "Your computer's IP (e.g. 192.168.1.5)", inputBuffer);
+                }
+                return;
+            }
+            if (c == '3') {
+                configManager.clear();
+                scanNetworks();
+                return;
+            }
+        }
+        return;
+    }
+
+    if (setupStep == SETUP_WIFI_SELECT) {
+        for (char c : status.word) {
+            if (c == 'n' || c == 'N') {
+                scanNetworks();
+                return;
+            }
+            if (c >= '1' && c <= '6') {
+                int choice = c - '0';
+                if (choice <= savedNetworkCount) {
+                    WiFiProfile prof;
+                    for (int i = 0, idx = 0; i < MAX_WIFI_PROFILES; i++) {
+                        if (configManager.getWiFiProfile(i, prof)) {
+                            if (idx == choice - 1) {
+                                configManager.setWiFiSSID(prof.ssid);
+                                configManager.setWiFiPassword(prof.password);
+                                configManager.setActiveWiFiProfile(i);
+                                break;
+                            }
+                            idx++;
+                        }
+                    }
+                    setupStep = SETUP_SERVER_IP;
+                    inputBuffer[0] = '\0';
+                    inputLength = 0;
+                    if (configManager.getServerIP()[0] != '\0') {
+                        strcpy(inputBuffer, configManager.getServerIP());
+                        inputLength = strlen(inputBuffer);
+                    }
+                    drawSetupScreen("Server IP Address", "Your computer's IP (e.g. 192.168.1.5)", inputBuffer);
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
+    if (setupStep == SETUP_SERVER_SELECT) {
+        for (char c : status.word) {
+            if (c == 'n' || c == 'N') {
+                setupStep = SETUP_SERVER_IP;
+                inputBuffer[0] = '\0';
+                inputLength = 0;
+                if (configManager.getServerIP()[0] != '\0') {
+                    strcpy(inputBuffer, configManager.getServerIP());
+                    inputLength = strlen(inputBuffer);
+                }
+                drawSetupScreen("Server IP Address", "Your computer's IP (e.g. 192.168.1.5)", inputBuffer);
+                return;
+            }
+            if (c >= '1' && c <= '6') {
+                int choice = c - '0';
+                if (choice <= savedServerCount) {
+                    ServerProfile prof;
+                    for (int i = 0, idx = 0; i < MAX_SERVER_PROFILES; i++) {
+                        if (configManager.getServerProfile(i, prof)) {
+                            if (idx == choice - 1) {
+                                configManager.setServerIP(prof.ip);
+                                configManager.setServerPort(prof.port);
+                                configManager.setActiveServerProfile(i);
+                                break;
+                            }
+                            idx++;
+                        }
+                    }
+                    setupStep = SETUP_CONFIRM;
+                    drawSetupSummaryScreen(
+                        configManager.getWiFiSSID(),
+                        configManager.getServerIP(),
+                        configManager.getServerPort()
+                    );
+                    return;
+                }
+            }
+        }
+        return;
+    }
+
     if (setupStep == SETUP_SELECT_NETWORK) {
         for (char c : status.word) {
             if (c == 'r' || c == 'R') {
@@ -504,6 +679,16 @@ void handleSetupKeyboard() {
                     setupStep = SETUP_PASSWORD;
                     inputBuffer[0] = '\0';
                     inputLength = 0;
+                    WiFiProfile prof;
+                    bool hasPassword = false;
+                    for (int i = 0; i < MAX_WIFI_PROFILES; i++) {
+                        if (configManager.getWiFiProfile(i, prof) && strcmp(prof.ssid, scannedNetworks[choice - 1].c_str()) == 0) {
+                            strcpy(inputBuffer, prof.password);
+                            inputLength = strlen(inputBuffer);
+                            hasPassword = true;
+                            break;
+                        }
+                    }
                     drawSetupScreen("WiFi Password", scannedNetworks[choice - 1].c_str(), inputBuffer);
                     return;
                 }
@@ -515,11 +700,12 @@ void handleSetupKeyboard() {
     if (setupStep == SETUP_CONFIRM) {
         for (char c : status.word) {
             if (c == 'y' || c == 'Y') {
+                configManager.addWiFiProfile(configManager.getWiFiSSID(), configManager.getWiFiPassword());
+                configManager.addServerProfile(configManager.getServerIP(), configManager.getServerPort());
                 saveSetupAndConnect();
                 return;
             }
             if (c == 'n' || c == 'N') {
-                configManager.clear();
                 runSetupFlow();
                 return;
             }
@@ -545,6 +731,10 @@ void handleSetupKeyboard() {
                 setupStep = SETUP_SERVER_IP;
                 inputBuffer[0] = '\0';
                 inputLength = 0;
+                if (configManager.getServerIP()[0] != '\0') {
+                    strcpy(inputBuffer, configManager.getServerIP());
+                    inputLength = strlen(inputBuffer);
+                }
                 drawSetupScreen("Server IP Address", "Your computer's IP (e.g. 192.168.1.5)", inputBuffer);
                 break;
             case SETUP_SERVER_IP:
@@ -552,8 +742,13 @@ void handleSetupKeyboard() {
                 setupStep = SETUP_SERVER_PORT;
                 inputBuffer[0] = '\0';
                 inputLength = 0;
-                strcpy(inputBuffer, "8765");
-                inputLength = 4;
+                if (configManager.getServerPort() != 0) {
+                    snprintf(inputBuffer, sizeof(inputBuffer), "%d", configManager.getServerPort());
+                    inputLength = strlen(inputBuffer);
+                } else {
+                    strcpy(inputBuffer, "8765");
+                    inputLength = 4;
+                }
                 drawSetupScreen("Server Port", "WebSocket port (default: 8765)", inputBuffer);
                 break;
             case SETUP_SERVER_PORT:
@@ -609,6 +804,8 @@ void clearCurrentPrompt() {
     currentContext = "";
     currentOptionCount = 0;
     currentType = "";
+    scrollOffset = 0;
+    maxScrollOffset = 0;
 
     for (int i = 0; i < 6; ++i) {
         currentOptions[i] = "";
@@ -621,4 +818,50 @@ void drawConnectingScreen() {
 
 void drawIdle() {
     drawIdleScreen(APP_VERSION, WiFi.localIP().toString().c_str(), true);
+}
+
+void drawSettingsMenu() {
+    char serverInfo[32];
+    snprintf(serverInfo, sizeof(serverInfo), "%s:%d",
+        configManager.getServerIP()[0] != '\0' ? configManager.getServerIP() : "-",
+        configManager.getServerPort());
+    drawSettingsMenuScreen(
+        configManager.isConfigured(),
+        configManager.getWiFiSSID()[0] != '\0' ? configManager.getWiFiSSID() : nullptr,
+        serverInfo
+    );
+}
+
+void updateMaxScroll() {
+    int dw = M5Cardputer.Display.width();
+    int contentHeight = 0;
+
+    if (currentType == "ask" || currentType == "escalate") {
+        contentHeight = measureWordWrappedHeight(currentQuestion.c_str(), 5, dw - 10);
+        if (currentContext.length() > 0) {
+            contentHeight += 5;
+            contentHeight += measureWordWrappedHeight(currentContext.c_str(), 5, dw - 10);
+        }
+        maxScrollOffset = max(0, contentHeight - 33);
+    } else if (currentType == "confirm") {
+        contentHeight = measureWordWrappedHeight(currentQuestion.c_str(), 5, dw - 10);
+        if (currentContext.length() > 0) {
+            contentHeight += 5;
+            contentHeight += measureWordWrappedHeight(currentContext.c_str(), 5, dw - 10);
+        }
+        maxScrollOffset = max(0, contentHeight - 36);
+    } else if (currentType == "choose") {
+        contentHeight = measureWordWrappedHeight(currentQuestion.c_str(), 5, dw - 10);
+        if (currentContext.length() > 0) {
+            contentHeight += 5;
+            contentHeight += measureWordWrappedHeight(currentContext.c_str(), 5, dw - 10);
+        }
+        contentHeight += 5;
+        for (int i = 0; i < currentOptionCount && i < 6; i++) {
+            contentHeight += measureWordWrappedHeight(currentOptions[i].c_str(), 20, dw - 25);
+        }
+        maxScrollOffset = max(0, contentHeight - 36);
+    } else {
+        maxScrollOffset = 0;
+    }
 }
