@@ -10,7 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-var version = "v1.2.0"
+var version = "dev"
 
 func main() {
 	cfg := ParseConfig()

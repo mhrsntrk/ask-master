@@ -1,0 +1,24 @@
+{
+  "name": "ask-master",
+  "owner": {
+    "name": "mhrsntrk",
+    "url": "https://github.com/mhrsntrk"
+  },
+  "plugins": [
+    {
+      "name": "ask-master",
+      "source": "./plugin",
+      "description": "Physical Human-in-the-Loop MCP server for AI coding agents using M5Stack Cardputer. Bundles MCP server registration, skill, slash commands (/ask-master:ask, :escalate, :status, :notify-test), Notification/SessionStart hooks, and optional statusline.",
+      "version": "1.0.0",
+      "homepage": "https://github.com/mhrsntrk/ask-master",
+      "keywords": [
+        "mcp",
+        "hitl",
+        "human-in-the-loop",
+        "cardputer",
+        "m5stack",
+        "afk"
+      ]
+    }
+  ]
+}

@@ -277,8 +277,8 @@ func registeredHandler(t *testing.T, bridge Bridger, toolName string) server.Too
 	RegisterTools(s, bridge, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	tools := s.ListTools()
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 registered tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 registered tools, got %d", len(tools))
 	}
 
 	tool := s.GetTool(toolName)

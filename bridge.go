@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/mhrsntrk/ask-master/internal/truncate"
 )
 
 var errBridgeDisconnected = errors.New("cardputer disconnected before reply")
@@ -324,6 +328,7 @@ func (b *Bridge) receive(msg string) {
 
 func (b *Bridge) StartWS(addr string) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/notify", b.notifyHandler)
 	mux.HandleFunc("/", b.wsHandler)
 
 	server := &http.Server{
@@ -449,6 +454,64 @@ func (b *Bridge) disconnectConn(conn *websocket.Conn, cause error) {
 		}
 		close(pq.done)
 	}
+}
+
+// Notify dispatches a fire-and-forget escalate-style alert to the device.
+// Returns immediately after a presence check; delivery happens in a goroutine
+// so callers (HTTP hooks) don't block on the device-reply timeout.
+func (b *Bridge) Notify(message, ctxMsg string) error {
+	if !b.presence.IsOnline() {
+		return errDeviceOffline
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"type":      "escalate",
+		"question":  truncate.String(message, 120),
+		"context":   truncate.String(ctxMsg, 60),
+		"escalated": true,
+	})
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		_, dispatchErr := b.SendAndWait(string(payload), "escalate", nil, 60*time.Second)
+		if dispatchErr != nil && !errors.Is(dispatchErr, context.DeadlineExceeded) {
+			b.logger.Debug("notify dispatch ended", "error", dispatchErr)
+		}
+	}()
+	return nil
+}
+
+func (b *Bridge) notifyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || (host != "127.0.0.1" && host != "::1" && host != "localhost") {
+		http.Error(w, "forbidden: localhost only", http.StatusForbidden)
+		return
+	}
+
+	var body struct {
+		Message string `json:"message"`
+		Context string `json:"context"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+	}
+	if body.Message == "" {
+		body.Message = "Claude Code needs your attention"
+	}
+
+	if err := b.Notify(body.Message, body.Context); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte("ok"))
 }
 
 func mapChooseReply(reply string, options []string) (string, error) {

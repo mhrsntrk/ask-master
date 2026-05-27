@@ -267,6 +267,90 @@ func TestBridgeWebSocketWriteConcurrency(t *testing.T) {
 	}
 }
 
+func TestNotifyHandlerOffline(t *testing.T) {
+	bridge := NewBridge(testLogger())
+
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(`{"message":"hi"}`))
+	req.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+
+	bridge.notifyHandler(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when device offline, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNotifyHandlerRemoteForbidden(t *testing.T) {
+	bridge := NewBridge(testLogger())
+
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(`{"message":"hi"}`))
+	req.RemoteAddr = "192.168.1.50:54321"
+	rec := httptest.NewRecorder()
+
+	bridge.notifyHandler(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-loopback remote, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNotifyHandlerWrongMethod(t *testing.T) {
+	bridge := NewBridge(testLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/notify", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+
+	bridge.notifyHandler(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for GET, got %d", rec.Code)
+	}
+}
+
+func TestNotifyDispatches(t *testing.T) {
+	bridge := NewBridge(testLogger())
+	client := connectTestClient(t, bridge)
+	defer client.Close()
+
+	got := make(chan string, 1)
+	go func() {
+		_, msg, err := client.ReadMessage()
+		if err != nil {
+			return
+		}
+		got <- string(msg)
+		_ = client.WriteMessage(websocket.TextMessage, []byte("ack"))
+	}()
+
+	if err := bridge.Notify("attention needed", "test-ctx"); err != nil {
+		t.Fatalf("Notify returned error: %v", err)
+	}
+
+	select {
+	case payload := <-got:
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if decoded["type"] != "escalate" {
+			t.Fatalf("expected type escalate, got %v", decoded["type"])
+		}
+		if decoded["question"] != "attention needed" {
+			t.Fatalf("expected question %q, got %v", "attention needed", decoded["question"])
+		}
+		if decoded["context"] != "test-ctx" {
+			t.Fatalf("expected context %q, got %v", "test-ctx", decoded["context"])
+		}
+		if decoded["escalated"] != true {
+			t.Fatalf("expected escalated true, got %v", decoded["escalated"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for notify payload on websocket")
+	}
+}
+
 func askHumanForTest(bridge Bridger, question string, timeout time.Duration) string {
 	payload := mustJSON(map[string]any{"type": "ask", "question": question})
 	resp, err := bridge.SendAndWait(payload, "ask", nil, timeout)

@@ -1,247 +1,345 @@
+<div align="center">
+
 # ask-master
 
-Physical Human-in-the-Loop MCP server for AI coding agents using M5Stack Cardputer.
+**Physical Human-in-the-Loop for AI coding agents.**
+When the model needs you, it pings a tiny screen on your desk — not your chat.
 
+[![Release](https://img.shields.io/github/v/release/mhrsntrk/ask-master?style=flat-square)](https://github.com/mhrsntrk/ask-master/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/mhrsntrk/ask-master/release.yml?style=flat-square)](https://github.com/mhrsntrk/ask-master/actions)
+[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?style=flat-square&logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![skills.sh](https://skills.sh/b/mhrsntrk/ask-master-skill)](https://skills.sh/mhrsntrk/ask-master-skill)
 
-## Why "ask-master"?
+</div>
 
-> **Trigger Warning:** This section contains references to Git branch names and first-name etymology. Reader discretion is advised.
+---
 
-In 2020, a lot of people got very upset about the word "master" and spent countless hours renaming their default Git branches to "main" — as if the branch name was the single greatest injustice in software development. It was a truly heroic effort. The word "master" was successfully defeated. Peace had returned to the repositories.
+`ask-master` is an [MCP](https://modelcontextprotocol.io) server that gives Claude Code, OpenCode, Cursor, or Windsurf a side-channel to you: a [M5Stack Cardputer](https://shop.m5stack.com/products/m5stack-cardputer-kit-w-m5stamps3) sitting on your desk. The agent asks questions there, you answer with the device's keyboard, and your chat history stays clean.
 
-Then I came along and named this tool **ask-master**.
+**Use cases.** Long-running agent loops you walk away from. Pair-programming sessions where you don't want approval prompts cluttering chat. Critical decisions you want a buzzer for. Anything where the model needs human input but the user might be AFK.
 
-Why? Because my first name is **Mahir**, and — plot twist — it literally translates to **"master"** in English. That's right. I didn't choose the name; my parents did, approximately thirty years ago, with absolutely no regard for your Git branch naming conventions.
-
-So if the name offends you, I fully support your right to be offended. I also support your right to click the **Fork** button and rename it to `ask-main`, `ask-primary`, `ask-trunk`, or whatever feels safest. I won't be mad. I might laugh, but I won't be mad.
-
-*Mahir out.*
-
-## Overview
-
-`ask-master` is a standalone MCP (Model Context Protocol) server that enables AI coding agents like Claude Code, OpenCode, Cursor, or Windsurf to pause and ask you questions via a physical M5Stack Cardputer device. This keeps your main screen clear of interruptions while providing a dedicated hardware interface for agent-human interaction.
-
-## Architecture
+## How it works
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  MCP Client (Claude Code / OpenCode / Cursor / Windsurf)         │
+│  MCP Client  (Claude Code / OpenCode / Cursor / Windsurf)        │
 │                                                                  │
-│   agent calls: ask-human() / confirm() / choose() / escalate()   │
+│   calls: ask-human, confirm, choose, escalate-to-human           │
 │         │                                                        │
-│         ▼  stdio (JSON-RPC 2.0 over stdin/stdout)                │
+│         ▼  stdio (JSON-RPC 2.0)                                  │
 ├──────────────────────────────────────────────────────────────────┤
-│  ask-master  (Go binary)                                         │
+│  ask-master  (Go daemon)                                         │
 │  ├── main.go      — MCP server init + ServeStdio                 │
-│  ├── bridge.go    — WebSocket server + state (mutex + channel)   │
-│  └── tools.go     — ask-human, confirm, choose handlers          │
+│  ├── bridge.go    — WebSocket bridge + /notify HTTP endpoint     │
+│  ├── daemon.go    — multi-session Unix socket + lock             │
+│  └── tools.go     — ask-human, confirm, choose, escalate-to-human│
 │         │                                                        │
 │         ▼  WebSocket  ws://0.0.0.0:8765                          │
 ├──────────────────────────────────────────────────────────────────┤
-│  Cardputer ADV firmware (Arduino / C++)                          │
-│  ├── WiFi client                                                 │
-│  ├── WebSocket client (auto-reconnect every 3s)                  │
-│  ├── JSON parser (ArduinoJson)                                   │
-│  ├── TFT renderer (per tool type)                                │
-│  └── Keyboard input handler                                      │
+│  Cardputer ADV firmware  (Arduino / C++)                         │
+│  ├── WiFi + WebSocket auto-reconnect (3s)                        │
+│  ├── UDP beacon (port 8766) — presence + wake                    │
+│  ├── On-device setup menu  (no source edits required)            │
+│  └── TFT renderer + keyboard                                     │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Prerequisites
+## Tools
 
-- Go 1.22+ (for the server)
-- PlatformIO CLI or Arduino IDE (for the firmware)
-- M5Stack Cardputer ADV device
+| Tool | When to use | Device shows | Reply method |
+|------|-------------|--------------|--------------|
+| `ask-human` | Open-ended question, free-text answer | Blue **ASK** screen, 1000 Hz beep | Type, Enter |
+| `confirm` | Yes / no decision | Red **CONFIRM** screen, 1300 Hz beep | `Y` / `N` |
+| `choose` | 2–6 multiple-choice options | Teal **CHOOSE** screen, 900 Hz beep | Number key |
+| `escalate-to-human` | Urgent — louder alert, use sparingly | Orange **ESCALATE** screen, 1500 Hz beep | Type, Enter |
 
-## Quick Start
+When the device is offline, tools return safe fallbacks (`[CARDPUTER OFFLINE] …`, `false`, or the first option) so the agent never hangs.
 
-### macOS (Homebrew)
+## Quick start
 
+### 1. Install the server
+
+**macOS (Homebrew):**
 ```bash
 brew install mhrsntrk/ask-master/ask-master
 ```
 
-### Linux / Windows / Build from Source
+**Other platforms / source:**
+```bash
+git clone https://github.com/mhrsntrk/ask-master && cd ask-master
+make build      # produces ./ask-master
+```
 
-1. Build the Go server:
-   ```bash
-   make build
-   ```
+### 2. Flash the Cardputer
 
-2. The binary `ask-master` will be created in the root directory.
+**M5Burner (recommended — no PC after first flash):**
 
-### Firmware Setup
+1. Install [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/introduction).
+2. In the **User Custom** tab, enter share code `KXgpvtfPA52RKfQK` (or search `ask-master`).
+3. Select your Cardputer ADV and click **Burn**.
+4. On first boot the device scans WiFi, prompts for password and your computer's IP.
 
-The firmware supports **on-device configuration** — no need to edit source code. Just flash it and configure WiFi + server IP directly on the Cardputer.
+Other paths: [M5Launcher (OTA)](#firmware-other-paths) · [PlatformIO build](#firmware-other-paths)
 
-#### Option A: M5Burner (Easiest — No Build Required)
+### 3. Wire it into Claude Code
 
-1. Download and install [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/introduction)
-2. Enter share code **`KXgpvtfPA52RKfQK`** in the **User Custom** tab, or search for `ask-master`
-3. Select your device (Cardputer ADV) and click **Burn**
-4. After flashing, the device **automatically scans for WiFi networks** and shows a list:
-   - Select your network by pressing **1-6**
-   - Press **R** to rescan if your network isn't visible
-   - Enter your **WiFi Password**
-   - Enter your computer's **IP address**
-   - Confirm the settings
+```text
+/plugin marketplace add mhrsntrk/ask-master
+/plugin install ask-master@ask-master
+```
 
-#### Option B: M5Launcher (OTA — No PC Required After Initial Setup)
+The plugin bundles the MCP server registration, the [skill](skill/SKILL.md), slash commands, a `SessionStart` context hook, and a `Notification` hook that auto-pings the device when Claude Code goes idle. The `ask-master` binary must be on `$PATH` (handled by step 1).
 
-1. Install [M5Launcher](https://github.com/bmorcelli/Launcher) on your Cardputer
-2. Open M5Launcher → **OTA** → Search `ask-master`
-3. Install over Wi-Fi
-4. Configure on-device as described above
+**One required hand-edit** — Claude Code plugins can't pre-grant MCP permissions. Append to `~/.claude/settings.json` so the agent doesn't prompt on every call (which defeats the AFK purpose):
 
-#### Option C: Build from Source (PlatformIO)
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__ask-master__ask-human",
+      "mcp__ask-master__confirm",
+      "mcp__ask-master__choose",
+      "mcp__ask-master__escalate-to-human"
+    ]
+  }
+}
+```
+
+That's it. Ask the agent something AFK and watch the Cardputer light up.
+
+## Other MCP clients
+
+<details>
+<summary><b>Claude Code (manual, no plugin)</b></summary>
+
+```bash
+claude mcp add ask-master --scope user -- /path/to/ask-master --ws-addr 0.0.0.0:8765
+```
+
+Or hand-edit `~/.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "ask-master": {
+      "command": "/path/to/ask-master",
+      "args": ["--ws-addr", "0.0.0.0:8765"]
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>OpenCode</b></summary>
+
+`opencode.jsonc`:
+```jsonc
+{
+  "mcp": {
+    "ask-master": {
+      "type": "local",
+      "command": ["/path/to/ask-master", "--ws-addr", "0.0.0.0:8765"],
+      "enabled": true,
+      "timeout": 310000
+    }
+  },
+  "instructions": "Escalate to physical device via ask-master tools only if chat goes unanswered for 2 minutes."
+}
+```
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+`~/.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "ask-master": { "command": "/path/to/ask-master" }
+  }
+}
+```
+`.cursorrules`:
+```text
+If I'm away from the keyboard (no reply in 2 mins), use the ask-master MCP tools to ping my Cardputer.
+```
+</details>
+
+<details>
+<summary><b>Windsurf</b></summary>
+
+`~/.codeium/windsurf/mcp_config.json`:
+```json
+{
+  "mcpServers": {
+    "ask-master": { "command": "/path/to/ask-master" }
+  }
+}
+```
+Windsurf rules:
+```text
+Always try chat first. If no reply within 120 seconds, escalate the question to my physical Cardputer using the ask-master MCP server.
+```
+</details>
+
+## Plugin features (Claude Code)
+
+The bundled plugin gives you more than just the MCP server:
+
+| Slash command | Action |
+|---------------|--------|
+| `/ask-master:ask <q>` | Force an `ask-human` call right now |
+| `/ask-master:escalate <q>` | Force an `escalate-to-human` call (louder alert) |
+| `/ask-master:status` | Print daemon + socket health |
+| `/ask-master:notify-test [msg]` | Fire a notification at the loopback `/notify` endpoint |
+
+**Notification hook.** Whenever Claude Code emits a `Notification` event (permission prompt, idle wait), the plugin's `scripts/notify.sh` POSTs to `http://127.0.0.1:8765/notify`. The daemon dispatches an `escalate`-style alert to the device — fire-and-forget, the harness is never blocked. Device offline → 503, hook silently no-ops.
+
+**Loopback-only.** The `/notify` HTTP endpoint rejects non-`127.0.0.1` / `::1` callers with 403, even when the WebSocket listener is bound to `0.0.0.0` for the device's LAN access.
+
+**Optional statusline.** Add to `~/.claude/settings.json`:
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "${HOME}/.claude/plugins/ask-master/scripts/statusline.sh"
+  }
+}
+```
+Prints `[ask-master:on]` / `[ask-master:off]` in the Claude Code status bar.
+
+See [`plugin/README.md`](plugin/README.md) for the full plugin reference.
+
+## CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ws-addr` | `0.0.0.0:8765` | WebSocket bridge listen address. The `/notify` HTTP endpoint shares this listener but is loopback-only. |
+| `--timeout` | `300` | Default tool answer timeout (seconds). |
+| `--log-level` | `info` | `debug` / `info` / `warn` / `error`. |
+| `--version` | — | Print version and exit. |
+
+## Skill (any MCP-aware agent)
+
+If your agent supports [skills](https://skills.sh), the escalation playbook is available standalone:
+
+```bash
+npx skills add mhrsntrk/ask-master-skill
+```
+
+The plugin already includes this skill — only install separately if you're using a non-Claude-Code agent.
+
+## Troubleshooting
+
+<details>
+<summary><b>Device shows <code>CONNECTING…</code> forever</b></summary>
+
+- The Cardputer can't reach the IP you entered. Press **S** on the idle screen to re-open setup and re-enter the host IP.
+- Your firewall may be blocking incoming TCP on `8765`. Allow it for your local subnet.
+- The server isn't actually running. Check `pgrep -f ask-master` or `lsof -i :8765`.
+</details>
+
+<details>
+<summary><b><code>[CARDPUTER OFFLINE]</code> in agent output</b></summary>
+
+The device hasn't sent a UDP beacon in the last 2 minutes. Check WiFi on the device (top-right indicator) and confirm UDP `8766` isn't blocked between the device and your machine.
+</details>
+
+<details>
+<summary><b><code>/notify</code> returns 503</b></summary>
+
+Same as above — device presence not seen. The Notification hook treats this as a no-op.
+</details>
+
+<details>
+<summary><b>Port 8765 already in use</b></summary>
+
+Run with `--ws-addr 0.0.0.0:8865` (or any free port) and re-enter that port on the device via the **S** setup menu.
+</details>
+
+<details>
+<summary><b>Multiple MCP clients want the same server</b></summary>
+
+`ask-master` runs as a daemon. The first invocation claims a Unix socket at `/tmp/ask-master.sock`; subsequent invocations proxy stdio to it. Multiple Claude Code, OpenCode, Cursor sessions can share one device cleanly.
+</details>
+
+## Firmware: other paths
+
+<details>
+<summary><b>M5Launcher (OTA, no PC after initial setup)</b></summary>
+
+1. Install [M5Launcher](https://github.com/bmorcelli/Launcher) on the Cardputer.
+2. Open M5Launcher → **OTA** → search `ask-master`.
+3. Install over WiFi, then go through the on-device setup wizard.
+</details>
+
+<details>
+<summary><b>PlatformIO (build from source)</b></summary>
 
 ```bash
 cd firmware/ask_master
 pio run -t upload
 ```
 
-After flashing, the device enters setup mode automatically:
-1. **Scans for WiFi networks** — select yours by number
-2. Enter your **WiFi Password**
-3. Enter your computer's **IP address**
-4. Confirm the settings
-
-To reconfigure later, press **S** on the idle screen.
-
-#### Building a Merged Binary for Distribution
-
-To create a single `.bin` for M5Burner v3:
-
+To produce a single merged binary for M5Burner v3:
 ```bash
-cd firmware/ask_master
 ./merge_bin.sh
 ```
+Output: `ask-master-cardputer.bin`.
 
-This produces `ask-master-cardputer.bin` which you can upload to M5Burner.
-
-## Configuration
-
-The server accepts the following CLI flags:
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--ws-addr` | `0.0.0.0:8765` | WebSocket bridge listen address |
-| `--timeout` | `300` | Default tool answer timeout in seconds |
-| `--log-level` | `info` | `debug` / `info` / `warn` / `error` |
-| `--version` | — | Print version and exit |
-
-## Client Setup
-
-Add `ask-master` to your preferred AI agent configuration. Replace `/path/to/bin/` with the actual path to your compiled binary.
-
-### Claude Code
-Add to `~/.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "ask-master": {
-      "command": "/path/to/bin/ask-master",
-      "args": ["--ws-addr", "0.0.0.0:8765"]
-    }
-  }
-}
-```
-
-### OpenCode
-Add to `opencode.jsonc`:
-```jsonc
-{
-  "mcp": {
-    "ask-master": {
-      "type": "local",
-      "command": ["/path/to/bin/ask-master", "--ws-addr", "0.0.0.0:8765"],
-      "enabled": true,
-      "timeout": 310000
-    }
-  }
-}
-```
-
-### Cursor
-Add to `~/.cursor/mcp.json`:
-```json
-{
-  "mcpServers": {
-    "ask-master": {
-      "command": "/path/to/bin/ask-master"
-    }
-  }
-}
-```
-
-### Windsurf
-Add to `~/.codeium/windsurf/mcp_config.json`:
-```json
-{
-  "mcpServers": {
-    "ask-master": {
-      "command": "/path/to/bin/ask-master"
-    }
-  }
-}
-```
-
-## Agent Instructions
-
-By default, AI agents don't know when to use physical hardware vs chat. To get the best experience, configure your agent with instructions to follow this escalation pattern:
-
-1. Ask in chat first.
-2. Wait up to 2 minutes for a response.
-3. If no response, use `ask-master` tools (`ask-human`, `confirm`, `choose`, `escalate-to-human`).
-
-The `escalate-to-human` tool is especially useful as an "attention grabber" for urgent cases, as it triggers a more prominent alert on the Cardputer.
-
-### Claude Code
-Add these instructions to `CLAUDE.md` in your project root or `~/.claude/CLAUDE.md`:
-```markdown
-When you need clarification or a decision:
-1. Ask in the chat first.
-2. Wait 2 minutes.
-3. If I don't respond, use the ask-master MCP tools to alert me on my physical device.
-4. For urgent blockers, use escalate-to-human immediately.
-```
-
-### OpenCode
-Add to the `instructions` field in your `opencode.jsonc`:
-```json
-{
-  "instructions": "Escalate to physical device via ask-master tools only if chat goes unanswered for 2 minutes."
-}
-```
-
-### Cursor
-Add to your `.cursorrules` file:
-```text
-If I'm away from the keyboard (no reply in 2 mins), use the ask-master MCP tools to ping my Cardputer.
-```
-
-### Windsurf
-Add to your Windsurf rules or instructions settings:
-```text
-Always try chat first. If no reply within 120 seconds, escalate the question to my physical Cardputer using the ask-master MCP server.
-```
-
-## Skill
-
-A dedicated skill is available at [mhrsntrk/ask-master-skill](https://github.com/mhrsntrk/ask-master-skill) for AI agents. Install it with:
-
-```bash
-npx skills add mhrsntrk/ask-master-skill
-```
+Press **S** on the idle screen to re-enter setup at any time.
+</details>
 
 ## Development
 
-### Syncing the Skill
+```bash
+make build       # produce ./ask-master with version stamped from git describe
+make test        # go test ./... -race -v
+make lint        # golangci-lint
+make firmware    # PlatformIO build
+```
 
-The `skill/SKILL.md` file is automatically synced to the [ask-master-skill](https://github.com/mhrsntrk/ask-master-skill) repository via GitHub Actions when changes are pushed to `master`.
+Layout:
+```
+.
+├── bridge.go / bridge_test.go   — WebSocket + /notify endpoint
+├── daemon.go                    — Unix-socket multi-session daemon
+├── tools.go / tools_test.go     — MCP tool registration
+├── config.go / config_test.go   — flags
+├── main.go                      — entry, daemon/client routing
+├── internal/truncate/           — string clipping helpers
+├── firmware/ask_master/         — Arduino / PlatformIO source
+├── skill/SKILL.md               — escalation playbook (source of truth)
+├── plugin/                      — Claude Code plugin (skill is symlinked)
+└── .claude-plugin/              — marketplace.json for the repo
+```
 
-**Setup required:**
-1. Create a Personal Access Token (PAT) at https://github.com/settings/tokens with `repo` scope
-2. Add it as a repository secret named `SKILL_REPO_PAT` at https://github.com/mhrsntrk/ask-master/settings/secrets/actions
+The `skill/SKILL.md` file is the source of truth. The plugin's copy is a symlink; the standalone skill repo (`mhrsntrk/ask-master-skill`) is synced via GitHub Actions on push to `master`. Set repo secret `SKILL_REPO_PAT` to a PAT with `repo` scope to enable that workflow.
 
+## Roadmap
+
+- [x] Daemon mode for multi-session sharing
+- [x] On-device WiFi + server setup (no source edits)
+- [x] M5Burner distribution
+- [x] Claude Code plugin: skill + slash commands + `Notification` hook
+- [x] Loopback `/notify` HTTP endpoint
+- [ ] Per-question metadata (which agent / project asked)
+- [ ] Multi-device fan-out (one server, several Cardputers)
+- [ ] Web UI fallback when the device is offline
+
+## Why "ask-master"?
+
+> **Trigger warning:** references to Git branch names and first-name etymology.
+
+In 2020 a lot of people got very upset about the word *master* and spent serious effort renaming default Git branches to *main*. Heroic stuff.
+
+Then I named this tool `ask-master`. My first name is **Mahir**, which translates literally to **"master"** in English. My parents picked it ~30 years ago with no regard for your branch-naming conventions.
+
+If the name bothers you, the **Fork** button is right there — `ask-main`, `ask-primary`, `ask-trunk` are all valid life choices. I won't be mad. I might laugh.
+
+*Mahir out.*
+
+## License
+
+[MIT](LICENSE) — © Mahir Şentürk
