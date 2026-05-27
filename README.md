@@ -220,15 +220,15 @@ See [`plugin/README.md`](plugin/README.md) for the full plugin reference.
 | `--log-level` | `info` | `debug` / `info` / `warn` / `error`. |
 | `--version` | — | Print version and exit. |
 
-## Skill (any MCP-aware agent)
+## Skill (non-Claude-Code agents)
 
-If your agent supports [skills](https://skills.sh), the escalation playbook is available standalone:
+For OpenCode, Cursor, Windsurf, or any other [skills.sh](https://skills.sh)-aware agent, install the escalation playbook standalone:
 
 ```bash
 npx skills add mhrsntrk/ask-master-skill
 ```
 
-The plugin already includes this skill — only install separately if you're using a non-Claude-Code agent.
+> **Claude Code users — skip this.** The plugin from step 3 already bundles the skill (as a symlink to the same source file). Installing both loads it into agent context twice.
 
 ## Troubleshooting
 

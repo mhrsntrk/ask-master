@@ -16,6 +16,8 @@ One-command bundle that wires the [ask-master](https://github.com/mhrsntrk/ask-m
 | `scripts/notify.sh` | Curls `POST http://127.0.0.1:8765/notify` whenever Claude Code emits a Notification event |
 | `scripts/statusline.sh` | Optional statusline indicator (`[ask-master:on/off]`) |
 
+> **Already using `npx skills add mhrsntrk/ask-master-skill`?** Uninstall it. The plugin bundles the same `SKILL.md` (as a symlink to the source-of-truth file), and running both loads the skill into your agent context twice.
+
 ## Prerequisites
 
 The plugin only wires Claude Code. You still need the `ask-master` binary on your `$PATH`:
