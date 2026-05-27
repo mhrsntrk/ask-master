@@ -445,23 +445,28 @@ void handleKeyboard() {
 
     Keyboard_Class::KeysState status = M5Cardputer.Keyboard.keysState();
 
+    // Arrow-key scroll. `;` and `.` are the physical up/down arrow keys on
+    // Cardputer ADV. Always consume these chars (never fall through to input)
+    // so the user can scroll long questions without typing the char.
+    bool consumeAsScroll = false;
     for (char c : status.word) {
-        if (c == 'u' || c == 'U') {
+        if (c == ';' || c == 'u' || c == 'U') {
+            consumeAsScroll = true;
             if (scrollOffset > 0) {
-                scrollOffset -= 8;
+                scrollOffset -= 16;
                 if (scrollOffset < 0) scrollOffset = 0;
-                renderCurrentScreen();
             }
-            return;
-        }
-        if (c == 'd' || c == 'D') {
+        } else if (c == '.' || c == 'd' || c == 'D') {
+            consumeAsScroll = true;
             if (scrollOffset < maxScrollOffset) {
-                scrollOffset += 8;
+                scrollOffset += 16;
                 if (scrollOffset > maxScrollOffset) scrollOffset = maxScrollOffset;
-                renderCurrentScreen();
             }
-            return;
         }
+    }
+    if (consumeAsScroll) {
+        renderCurrentScreen();
+        return;
     }
 
     if (currentType == "ask" || currentType == "escalate") {
@@ -833,35 +838,8 @@ void drawSettingsMenu() {
 }
 
 void updateMaxScroll() {
-    int dw = M5Cardputer.Display.width();
-    int contentHeight = 0;
-
-    if (currentType == "ask" || currentType == "escalate") {
-        contentHeight = measureWordWrappedHeight(currentQuestion.c_str(), 5, dw - 10);
-        if (currentContext.length() > 0) {
-            contentHeight += 5;
-            contentHeight += measureWordWrappedHeight(currentContext.c_str(), 5, dw - 10);
-        }
-        maxScrollOffset = max(0, contentHeight - 33);
-    } else if (currentType == "confirm") {
-        contentHeight = measureWordWrappedHeight(currentQuestion.c_str(), 5, dw - 10);
-        if (currentContext.length() > 0) {
-            contentHeight += 5;
-            contentHeight += measureWordWrappedHeight(currentContext.c_str(), 5, dw - 10);
-        }
-        maxScrollOffset = max(0, contentHeight - 36);
-    } else if (currentType == "choose") {
-        contentHeight = measureWordWrappedHeight(currentQuestion.c_str(), 5, dw - 10);
-        if (currentContext.length() > 0) {
-            contentHeight += 5;
-            contentHeight += measureWordWrappedHeight(currentContext.c_str(), 5, dw - 10);
-        }
-        contentHeight += 5;
-        for (int i = 0; i < currentOptionCount && i < 6; i++) {
-            contentHeight += measureWordWrappedHeight(currentOptions[i].c_str(), 20, dw - 25);
-        }
-        maxScrollOffset = max(0, contentHeight - 36);
-    } else {
-        maxScrollOffset = 0;
-    }
+    maxScrollOffset = computeMaxScroll(currentType.c_str(),
+                                       currentQuestion.c_str(),
+                                       currentContext.c_str(),
+                                       currentOptions, currentOptionCount);
 }

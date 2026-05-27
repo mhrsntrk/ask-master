@@ -8,6 +8,10 @@ void drawSetupScreen(const char* label, const char* context, const char* inputBu
 void drawSetupSummaryScreen(const char* ssid, const char* serverIP, uint16_t port);
 void drawNetworkListScreen(const String networks[], int networkCount, int8_t rssi[]);
 int measureWordWrappedHeight(const char* text, int x, int maxWidth);
+// Returns max valid scrollY for the given screen type so callers don't
+// scroll past the last visible line.
+int computeMaxScroll(const char* type, const char* question, const char* context,
+                      const String options[], int optionCount);
 void drawSettingsMenuScreen(bool hasConfig, const char* currentSSID, const char* currentServer);
 void drawWiFiSelectScreen(const String networks[], int networkCount, int8_t rssi[], bool showSaved);
 void drawServerSelectScreen(const char* ips[], int ports[], int count);
