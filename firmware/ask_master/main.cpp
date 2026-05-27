@@ -306,7 +306,16 @@ void runSetupFlow() {
 }
 
 void saveSetupAndConnect() {
-    configManager.save();
+    if (!configManager.save()) {
+        // NVS write failed — show a transient error stripe and bail out of
+        // the setup-complete flow so the user knows their config did not
+        // persist and can retry instead of seeing a working device that
+        // forgets everything on the next reboot.
+        drawSetupScreen("NVS save failed", "config NOT persisted - retry or factory reset", "");
+        delay(2500);
+        setupStep = SETUP_CONFIRM;
+        return;
+    }
     inSetupMode = false;
     currentState = SLEEP;
     WiFi.mode(WIFI_STA);
@@ -688,7 +697,8 @@ void handleSetupKeyboard() {
                     bool hasPassword = false;
                     for (int i = 0; i < MAX_WIFI_PROFILES; i++) {
                         if (configManager.getWiFiProfile(i, prof) && strcmp(prof.ssid, scannedNetworks[choice - 1].c_str()) == 0) {
-                            strcpy(inputBuffer, prof.password);
+                            strncpy(inputBuffer, prof.password, sizeof(inputBuffer) - 1);
+                            inputBuffer[sizeof(inputBuffer) - 1] = '\0';
                             inputLength = strlen(inputBuffer);
                             hasPassword = true;
                             break;

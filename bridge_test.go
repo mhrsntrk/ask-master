@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -309,6 +310,94 @@ func TestNotifyHandlerWrongMethod(t *testing.T) {
 	}
 }
 
+func TestWSRejectsForeignPeerIP(t *testing.T) {
+	bridge := NewBridge(testLogger())
+	bridge.presence.Update("10.99.99.99") // pretend the real device is on .99
+
+	server := httptest.NewServer(http.HandlerFunc(bridge.wsHandler))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected handshake failure for peer IP mismatch")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %v (err=%v)", resp, err)
+	}
+}
+
+func TestWSRejectsWhenNoBeacon(t *testing.T) {
+	bridge := NewBridge(testLogger())
+	// No presence.Update — daemon hasn't seen a beacon yet.
+
+	server := httptest.NewServer(http.HandlerFunc(bridge.wsHandler))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected handshake failure when no beacon seen")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %v (err=%v)", resp, err)
+	}
+}
+
+func TestQueueCapRejectsExcess(t *testing.T) {
+	bridge := NewBridge(testLogger())
+	bridge.presence.Update("127.0.0.1") // online, but no real WS — every call queues
+
+	// Pre-fill the queue to wsMaxQueueDepth WITHOUT going through SendAndWait
+	// (which would block until each item is processed). The queue cap fires
+	// at the append step.
+	bridge.mu.Lock()
+	for i := 0; i < wsMaxQueueDepth; i++ {
+		bridge.queue = append(bridge.queue, &pendingQuestion{done: make(chan struct{})})
+	}
+	bridge.mu.Unlock()
+
+	_, err := bridge.SendAndWait("payload", "ask", nil, 50*time.Millisecond)
+	if !errors.Is(err, errQueueFull) {
+		t.Fatalf("expected errQueueFull, got %v", err)
+	}
+}
+
+func TestNotifyThrottle(t *testing.T) {
+	bridge := NewBridge(testLogger())
+	bridge.presence.Update("127.0.0.1")
+
+	if err := bridge.Notify("first", ""); err != nil {
+		t.Fatalf("first notify: %v", err)
+	}
+	if err := bridge.Notify("second", ""); !errors.Is(err, errNotifyThrottled) {
+		t.Fatalf("expected throttle, got %v", err)
+	}
+}
+
+func TestNotifyHandlerReturnsThrottleStatus(t *testing.T) {
+	bridge := NewBridge(testLogger())
+	bridge.presence.Update("127.0.0.1")
+
+	// First call — should be queued (202)
+	req := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(`{"message":"hi"}`))
+	req.RemoteAddr = "127.0.0.1:54321"
+	rec := httptest.NewRecorder()
+	bridge.notifyHandler(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("first call expected 202, got %d", rec.Code)
+	}
+
+	// Second call within debounce window — 429
+	req2 := httptest.NewRequest(http.MethodPost, "/notify", strings.NewReader(`{"message":"hi"}`))
+	req2.RemoteAddr = "127.0.0.1:54321"
+	rec2 := httptest.NewRecorder()
+	bridge.notifyHandler(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second call expected 429, got %d (body=%q)", rec2.Code, rec2.Body.String())
+	}
+}
+
 func TestNotifyDispatches(t *testing.T) {
 	bridge := NewBridge(testLogger())
 	client := connectTestClient(t, bridge)
@@ -389,6 +478,10 @@ func mustJSON(v any) string {
 func connectTestClient(t *testing.T, bridge *Bridge) *websocket.Conn {
 	t.Helper()
 
+	// Presence must be set BEFORE the WS handshake — wsHandler now rejects
+	// peers whose IP doesn't match the latest UDP beacon.
+	bridge.presence.Update("127.0.0.1")
+
 	server := httptest.NewServer(http.HandlerFunc(bridge.wsHandler))
 	t.Cleanup(server.Close)
 
@@ -406,8 +499,6 @@ func connectTestClient(t *testing.T, bridge *Bridge) *websocket.Conn {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-
-	bridge.presence.Update("127.0.0.1")
 
 	t.Cleanup(func() {
 		_ = client.Close()

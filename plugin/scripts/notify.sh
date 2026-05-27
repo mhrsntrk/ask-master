@@ -5,8 +5,29 @@
 #
 # Stdin: JSON payload from Claude Code. Best-effort message extraction.
 # Exit: always 0 (hook must not block the harness).
+#
+# Debouncing: a per-user timestamp file enforces a minimum interval between
+# device pings (default 10 s). This prevents a noisy plugin or rapid
+# permission-prompt loop from spamming the Cardputer. Override with the
+# ASK_MASTER_NOTIFY_INTERVAL env var (seconds).
 
 set +e
+
+MIN_INTERVAL=${ASK_MASTER_NOTIFY_INTERVAL:-10}
+STATE_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+STATE_FILE="${STATE_DIR%/}/ask-master-notify.last"
+
+now=$(date +%s)
+if [ -f "$STATE_FILE" ]; then
+  last=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
+  case "$last" in
+    ''|*[!0-9]*) last=0 ;;
+  esac
+  if [ $((now - last)) -lt "$MIN_INTERVAL" ]; then
+    exit 0  # silently debounced
+  fi
+fi
+printf '%s' "$now" > "$STATE_FILE" 2>/dev/null
 
 PAYLOAD=$(cat 2>/dev/null || true)
 

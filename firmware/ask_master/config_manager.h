@@ -23,7 +23,7 @@ public:
     ConfigManager();
     bool begin();
     bool load();
-    void save();
+    bool save();  // returns true on success, false if NVS write failed
     bool isConfigured() const;
     void clear();
 

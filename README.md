@@ -317,6 +317,21 @@ Layout:
 
 The `skill/SKILL.md` file is the source of truth. The plugin's copy is a symlink; the standalone skill repo (`mhrsntrk/ask-master-skill`) is synced via GitHub Actions on push to `master`. Set repo secret `SKILL_REPO_PAT` to a PAT with `repo` scope to enable that workflow.
 
+## Security
+
+`ask-master` runs as a daemon on your laptop. The WebSocket bridge binds to all interfaces (`0.0.0.0:8765`) so the Cardputer can reach it from your LAN. To keep that surface honest:
+
+- **IP-binding auth on the WS handshake.** A peer can only complete the WS upgrade if its IP matches the most recent UDP-beacon source (the real device beacons every few seconds before connecting). Random LAN peers fail the handshake with `403`.
+- **Frame size cap.** The WS reader is limited to 64 KB per frame — a malicious peer cannot crash the daemon with an oversized message.
+- **Queue cap.** At most 32 questions pending; further calls return an error to the MCP client instead of growing memory forever.
+- **`/notify` rate limit.** The loopback notification endpoint is throttled to one alert every 2 seconds (`429` on excess). The plugin's `Notification` hook adds its own 10-second debounce on the client side.
+- **Loopback-only `/notify`.** The endpoint rejects non-`127.0.0.1` / `::1` callers with `403` even though the listener itself is LAN-bound.
+- **Per-user runtime state.** Daemon Unix socket lives under `$XDG_RUNTIME_DIR` (Linux) or `$HOME/Library/Caches/ask-master` (macOS), no longer in world-writable `/tmp`.
+
+**Known limitations.** IP-binding auth is best-effort — an attacker on the same LAN segment who can both (a) take down the real device and (b) spoof its IP can still pair with the daemon. A pre-shared-secret pairing flow with on-device token entry is planned for the next release.
+
+If you're running on an untrusted network and don't have a Cardputer hooked up, pass `--ws-addr 127.0.0.1:8765` to bind to loopback only.
+
 ## Roadmap
 
 - [x] Daemon mode for multi-session sharing
@@ -324,6 +339,8 @@ The `skill/SKILL.md` file is the source of truth. The plugin's copy is a symlink
 - [x] M5Burner distribution
 - [x] Claude Code plugin: skill + slash commands + `Notification` hook
 - [x] Loopback `/notify` HTTP endpoint
+- [x] IP-binding WS auth + frame size cap + notify rate limit (v1.4.1)
+- [ ] Pre-shared-secret pairing flow with on-device token entry
 - [ ] Per-question metadata (which agent / project asked)
 - [ ] Multi-device fan-out (one server, several Cardputers)
 - [ ] Web UI fallback when the device is offline

@@ -28,6 +28,11 @@ const (
 	wakeTimeout       = 10 * time.Second
 	wakePacket        = "ask-master-wake"
 	beaconPacket      = "ask-master-ping"
+	// WebSocket safety limits
+	wsReadLimitBytes  = 64 * 1024
+	wsMaxQueueDepth   = 32
+	// Rate limit window for /notify and Notify dispatches
+	notifyMinInterval = 2 * time.Second
 )
 
 type DevicePresence struct {
@@ -63,7 +68,14 @@ type pendingQuestion struct {
 	errCh        chan error
 	totalTimer   *time.Timer
 	done         chan struct{}
+	doneOnce     sync.Once
 	answered     bool
+}
+
+// closeDone closes the done channel exactly once. removeQuestion,
+// receive, and disconnectConn can all race to close it.
+func (pq *pendingQuestion) closeDone() {
+	pq.doneOnce.Do(func() { close(pq.done) })
 }
 
 type Bridger interface {
@@ -86,7 +98,14 @@ type Bridge struct {
 	upgrader       websocket.Upgrader
 	presence       *DevicePresence
 	udpConn        *net.UDPConn
+
+	notifyMu     sync.Mutex
+	lastNotifyAt time.Time
 }
+
+var errQueueFull = errors.New("question queue full")
+var errNotifyThrottled = errors.New("notify rate limit (one alert per 2s)")
+var errWSIPMismatch = errors.New("websocket peer IP does not match device beacon")
 
 func NewBridge(logger *slog.Logger) *Bridge {
 	if logger == nil {
@@ -140,6 +159,10 @@ func (b *Bridge) SendAndWait(payload string, questionType string, options []stri
 	}
 
 	b.mu.Lock()
+	if len(b.queue) >= wsMaxQueueDepth {
+		b.mu.Unlock()
+		return "", errQueueFull
+	}
 	b.queue = append(b.queue, pq)
 	b.mu.Unlock()
 
@@ -246,7 +269,7 @@ func (b *Bridge) removeQuestion(pq *pendingQuestion) {
 	for i, q := range b.queue {
 		if q == pq {
 			b.queue = append(b.queue[:i], b.queue[i+1:]...)
-			close(q.done)
+			q.closeDone()
 			break
 		}
 	}
@@ -274,14 +297,38 @@ func (b *Bridge) wakeDevice() error {
 }
 
 func (b *Bridge) wsHandler(w http.ResponseWriter, r *http.Request) {
+	// Auth: the connecting peer's IP must match the most recent UDP beacon's
+	// source. The real device beacons before it connects, so its IP is known.
+	// A random LAN peer trying to hijack the WS will fail this check unless
+	// they also spoof UDP from the same IP — and they would not receive
+	// responses at that spoofed IP.
+	peerHost, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	if splitErr == nil {
+		expected := b.presence.GetIP()
+		if expected == "" {
+			b.logger.Warn("ws upgrade rejected: no beacon yet", "peer", peerHost)
+			http.Error(w, "device not beaconing", http.StatusForbidden)
+			return
+		}
+		if peerHost != expected {
+			b.logger.Warn("ws upgrade rejected: peer ip mismatch",
+				"peer", peerHost, "expected", expected)
+			http.Error(w, errWSIPMismatch.Error(), http.StatusForbidden)
+			return
+		}
+	}
+
 	conn, err := b.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		b.logger.Error("websocket upgrade failed", "error", err)
 		return
 	}
 
+	// Bound message size — prevent OOM from a malicious frame.
+	conn.SetReadLimit(wsReadLimitBytes)
+
 	b.replaceConn(conn)
-	b.logger.Info("device connected via websocket")
+	b.logger.Info("device connected via websocket", "peer", peerHost)
 
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -323,7 +370,7 @@ func (b *Bridge) receive(msg string) {
 	default:
 	}
 
-	close(pq.done)
+	pq.closeDone()
 }
 
 func (b *Bridge) StartWS(addr string) error {
@@ -452,7 +499,7 @@ func (b *Bridge) disconnectConn(conn *websocket.Conn, cause error) {
 			default:
 			}
 		}
-		close(pq.done)
+		pq.closeDone()
 	}
 }
 
@@ -463,6 +510,16 @@ func (b *Bridge) Notify(message, ctxMsg string) error {
 	if !b.presence.IsOnline() {
 		return errDeviceOffline
 	}
+
+	// Rate limit — protect the device from beep spam if a hostile plugin or
+	// runaway loop hammers /notify.
+	b.notifyMu.Lock()
+	if time.Since(b.lastNotifyAt) < notifyMinInterval {
+		b.notifyMu.Unlock()
+		return errNotifyThrottled
+	}
+	b.lastNotifyAt = time.Now()
+	b.notifyMu.Unlock()
 
 	payload, err := json.Marshal(map[string]any{
 		"type":      "escalate",
@@ -507,7 +564,11 @@ func (b *Bridge) notifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := b.Notify(body.Message, body.Context); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, errNotifyThrottled) {
+			status = http.StatusTooManyRequests
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)

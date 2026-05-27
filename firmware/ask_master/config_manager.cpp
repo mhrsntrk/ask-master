@@ -46,19 +46,25 @@ bool ConfigManager::load() {
     return false;
 }
 
-void ConfigManager::save() {
-    prefs.putBool("configured", true);
-    prefs.putString("ssid", _ssid);
-    prefs.putString("password", _password);
-    prefs.putString("serverIP", _serverIP);
-    prefs.putUShort("serverPort", _serverPort);
-    prefs.putInt("activeWiFi", _activeWiFiProfile);
-    prefs.putInt("activeServer", _activeServerProfile);
-    
+bool ConfigManager::save() {
+    // Preferences.put* return the number of bytes written, or 0 on failure
+    // (NVS full, key invalid, partition unmounted). Check each write so the
+    // caller can surface "config not saved" on the UI instead of silently
+    // losing settings.
+    bool ok = true;
+    if (prefs.putBool("configured", true) == 0) ok = false;
+    if (prefs.putString("ssid", _ssid) == 0) ok = false;
+    if (prefs.putString("password", _password) == 0) ok = false;
+    if (prefs.putString("serverIP", _serverIP) == 0) ok = false;
+    if (prefs.putUShort("serverPort", _serverPort) == 0) ok = false;
+    if (prefs.putInt("activeWiFi", _activeWiFiProfile) == 0) ok = false;
+    if (prefs.putInt("activeServer", _activeServerProfile) == 0) ok = false;
+
     saveWiFiProfiles();
     saveServerProfiles();
-    
+
     _configured = true;
+    return ok;
 }
 
 bool ConfigManager::isConfigured() const {

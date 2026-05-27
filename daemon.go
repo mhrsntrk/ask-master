@@ -7,15 +7,33 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const (
-	socketPath = "/tmp/ask-master.sock"
-	lockFile   = "/tmp/ask-master.lock"
+var (
+	socketPath = resolveStateFile("ask-master.sock")
+	lockFile   = resolveStateFile("ask-master.lock")
 )
+
+// resolveStateFile returns a per-user path for runtime state files, falling
+// back to /tmp only if a per-user directory is not available. This avoids
+// the historical /tmp/ask-master.sock collision on multi-user machines.
+func resolveStateFile(name string) string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		base := filepath.Join(dir, "ask-master")
+		_ = os.MkdirAll(base, 0700)
+		return filepath.Join(base, name)
+	}
+	if cache, err := os.UserCacheDir(); err == nil && cache != "" {
+		base := filepath.Join(cache, "ask-master")
+		_ = os.MkdirAll(base, 0700)
+		return filepath.Join(base, name)
+	}
+	return filepath.Join("/tmp", name)
+}
 
 // Daemon runs the persistent WebSocket + UDP server and accepts
 // MCP client connections over a Unix domain socket.
@@ -103,10 +121,14 @@ func (d *Daemon) handleClient(conn net.Conn) {
 	defer pr.Close()
 	defer pw.Close()
 
-	// Goroutine: read from socket, write to pipe (acts as stdin)
+	// Goroutine: read from socket, write to pipe (acts as stdin).
+	// When the socket reaches EOF (client disconnected), cancel the context
+	// so handleClient unblocks and returns instead of leaking the goroutines.
 	go func() {
 		defer pw.Close()
+		defer cancel()
 		scanner := bufio.NewScanner(conn)
+		scanner.Buffer(make([]byte, 0, 4096), wsReadLimitBytes)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if len(line) == 0 {
