@@ -1,16 +1,33 @@
 #include "ui.h"
+#include "ui_theme.h"
+#include "sprites.h"
 #include <M5Cardputer.h>
 #include "config.h"
-#include "sprites.h"
+
+// ============================================================================
+// ask-master UI — Modern Terminal + 24x24 Mascot
+// ============================================================================
 
 static M5Canvas canvas(&M5Cardputer.Display);
 static bool canvasInitialized = false;
 
+// Caret blink state
+static unsigned long lastCaretToggle = 0;
+static bool caretVisible = true;
+
+// Idle face blink state (reuses existing pattern)
 static unsigned long lastBlinkTime = 0;
 static bool isBlinking = false;
+
+// Escalate flash state (250 ms on / 250 ms off)
+static unsigned long lastFlashTime = 0;
+static bool escalateBright = true;
+
+// Sleep Z particle state (kept from previous UI)
 static int sleepZOffset = 0;
 static unsigned long lastZTime = 0;
 
+// ---- Init ------------------------------------------------------------------
 void initCanvasIfNeeded() {
     if (!canvasInitialized) {
         int dw = M5Cardputer.Display.width();
@@ -21,92 +38,131 @@ void initCanvasIfNeeded() {
     }
 }
 
-static void drawSpriteFrame(int cx, int cy, const uint8_t bitmap[SPRITE_HEIGHT][SPRITE_BYTES_PER_ROW]) {
-    int x0 = cx - SPRITE_WIDTH / 2;
-    int y0 = cy - SPRITE_HEIGHT / 2;
-    for (int row = 0; row < SPRITE_HEIGHT; row++) {
-        for (int col = 0; col < SPRITE_WIDTH; col++) {
-            int byteIdx = col / 8;
-            int bitIdx = 7 - (col % 8);
-            uint8_t byteVal = pgm_read_byte(&bitmap[row][byteIdx]);
-            if ((byteVal >> bitIdx) & 1) {
-                canvas.drawPixel(x0 + col, y0 + row, TFT_WHITE);
+// ---- Color helpers ---------------------------------------------------------
+static inline uint16_t accentBright(const UIAccent& a) {
+    return canvas.color565(a.r, a.g, a.b);
+}
+static inline uint16_t accentMid(const UIAccent& a) {
+    return canvas.color565((a.r * 3) / 4, (a.g * 3) / 4, (a.b * 3) / 4);
+}
+static inline uint16_t accentDim(const UIAccent& a) {
+    return canvas.color565(a.r / 2, a.g / 2, a.b / 2);
+}
+
+static inline uint16_t cDim()   { return canvas.color565(0x7C, 0x7C, 0x7C); }
+static inline uint16_t cMuted() { return canvas.color565(0x40, 0x40, 0x40); }
+static inline uint16_t cDimmer() { return canvas.color565(0x20, 0x20, 0x20); }
+
+// ---- Sprite renderer (24x24 4-color from ASCII strings) -------------------
+static void drawSprite24(int cx, int cy, const Sprite24& sprite, const UIAccent& acc) {
+    int x0 = cx - SPRITE_W / 2;
+    int y0 = cy - SPRITE_H / 2;
+    uint16_t br = accentBright(acc);
+    uint16_t md = accentMid(acc);
+    uint16_t dm = accentDim(acc);
+
+    for (int row = 0; row < SPRITE_H; row++) {
+        const char* line = sprite[row]; // ESP32: flash is memory-mapped
+        if (!line) continue;
+        for (int col = 0; col < SPRITE_W; col++) {
+            char c = line[col];
+            uint16_t color;
+            switch (c) {
+                case '#': color = br; break;
+                case '=': color = md; break;
+                case '+': color = dm; break;
+                default:  continue;
             }
+            canvas.drawPixel(x0 + col, y0 + row, color);
         }
     }
 }
 
-void drawCharacterFace(int cx, int cy, bool sleeping) {
-    unsigned long now = millis();
+// ---- Status bar (top 8 px) -------------------------------------------------
+static void drawStatusBar(const char* label, bool online) {
+    // Background
+    canvas.fillRect(0, UI_STATUS_TOP, 240, UI_STATUS_BOTTOM, UI_RGB_BG);
 
-    if (sleeping) {
-        int frameIdx = (now / 800) % 2;
-        if (frameIdx == 0) {
-            drawSpriteFrame(cx, cy, SPRITE_SLEEP_1);
-        } else {
-            drawSpriteFrame(cx, cy, SPRITE_SLEEP_2);
-        }
+    // Left: state label
+    canvas.setTextColor(cDim());
+    canvas.setTextDatum(top_left);
+    canvas.drawString(label ? label : "", UI_PAD_X, 0);
 
-        if (now - lastZTime > 600) {
-            lastZTime = now;
-            sleepZOffset = 0;
-        }
-        sleepZOffset = (now - lastZTime) / 40;
-        if (sleepZOffset < 12) {
-            int alpha = 255 - (sleepZOffset * 21);
-            uint16_t zColor = canvas.color565(alpha, alpha, alpha);
-            canvas.setTextColor(zColor);
-            canvas.setTextDatum(top_left);
-            canvas.drawString("Z", cx + 10, cy - 8 - sleepZOffset);
-            if (sleepZOffset > 3) {
-                canvas.drawString("z", cx + 16, cy - 2 - sleepZOffset);
-            }
-        }
+    // Right: connection dot + ON/OFF
+    canvas.setTextDatum(top_right);
+    if (online) {
+        canvas.fillCircle(240 - UI_PAD_X - 4, 4, 2, canvas.color565(0x00, 0xCC, 0x66));
+        canvas.setTextColor(cDim());
+        canvas.drawString("ON", 240 - UI_PAD_X - 10, 0);
     } else {
-        if (isBlinking) {
-            if (now - lastBlinkTime > 150) {
-                isBlinking = false;
-                lastBlinkTime = now;
-            }
-            drawSpriteFrame(cx, cy, SPRITE_IDLE_2);
-        } else {
-            drawSpriteFrame(cx, cy, SPRITE_IDLE_1);
-            if (now - lastBlinkTime > 3000 + (random() % 2000)) {
-                isBlinking = true;
-                lastBlinkTime = now;
-            }
-        }
+        canvas.fillCircle(240 - UI_PAD_X - 4, 4, 2, canvas.color565(0xCC, 0x40, 0x40));
+        canvas.setTextColor(cDim());
+        canvas.drawString("OFF", 240 - UI_PAD_X - 10, 0);
+    }
+
+    // Hairline separator
+    canvas.drawLine(0, UI_HAIRLINE_TOP_Y, 240, UI_HAIRLINE_TOP_Y, cMuted());
+}
+
+// ---- Footer (bottom 15 px, accent fill, black text) -----------------------
+static void drawFooter(const char* hint, const UIAccent& acc) {
+    canvas.drawLine(0, UI_HAIRLINE_BOT_Y, 240, UI_HAIRLINE_BOT_Y, cMuted());
+    canvas.fillRect(0, UI_FOOTER_TOP, 240, UI_FOOTER_BOTTOM - UI_FOOTER_TOP + 1,
+                    accentBright(acc));
+    canvas.setTextColor(UI_RGB_BG);
+    canvas.setTextDatum(middle_center);
+    canvas.drawString(hint ? hint : "", 120, (UI_FOOTER_TOP + UI_FOOTER_BOTTOM) / 2);
+}
+
+// ---- Dim footer (no accent, for less prominent states) --------------------
+static void drawFooterDim(const char* hint) {
+    canvas.drawLine(0, UI_HAIRLINE_BOT_Y, 240, UI_HAIRLINE_BOT_Y, cMuted());
+    canvas.setTextColor(cDim());
+    canvas.setTextDatum(middle_center);
+    canvas.drawString(hint ? hint : "", 120, (UI_FOOTER_TOP + UI_FOOTER_BOTTOM) / 2);
+}
+
+// ---- Caret -----------------------------------------------------------------
+static void drawCaret(int x, int y) {
+    unsigned long now = millis();
+    if (now - lastCaretToggle > 500) {
+        lastCaretToggle = now;
+        caretVisible = !caretVisible;
+    }
+    if (caretVisible) {
+        canvas.fillRect(x, y, 1, 8, UI_RGB_FG);
     }
 }
 
-int drawWordWrapped(const char* text, int x, int y, int maxWidth, uint16_t color, int scrollY, int clipY, int clipHeight) {
+// ---- Word-wrapped text rendering ------------------------------------------
+int drawWordWrappedColored(const char* text, int x, int y, int maxWidth,
+                            uint16_t color, int scrollY, int clipTop, int clipBottom) {
     if (!text) return y;
     canvas.setTextColor(color);
     canvas.setTextDatum(top_left);
     int cursorX = x;
     int cursorY = y - scrollY;
     int lineHeight = canvas.fontHeight();
-    int endClip = clipY + clipHeight;
-    
+
     char buffer[512];
-    strncpy(buffer, text, sizeof(buffer)-1);
-    buffer[sizeof(buffer)-1] = '\0';
-    
+    strncpy(buffer, text, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
     char* word = strtok(buffer, " \n");
-    while (word != NULL) {
+    while (word != nullptr) {
         int wWidth = canvas.textWidth(word);
         int spaceWidth = canvas.textWidth(" ");
-        
+
         if (cursorX + wWidth > x + maxWidth && cursorX > x) {
             cursorX = x;
             cursorY += lineHeight;
         }
-        
-        if (cursorY + lineHeight > clipY && cursorY < endClip) {
+
+        if (cursorY + lineHeight > clipTop && cursorY < clipBottom) {
             canvas.drawString(word, cursorX, cursorY);
         }
         cursorX += wWidth + spaceWidth;
-        word = strtok(NULL, " \n");
+        word = strtok(nullptr, " \n");
     }
     return cursorY + lineHeight + scrollY;
 }
@@ -116,471 +172,548 @@ int measureWordWrappedHeight(const char* text, int x, int maxWidth) {
     int cursorX = x;
     int cursorY = 0;
     int lineHeight = canvas.fontHeight();
-    
+
     char buffer[512];
-    strncpy(buffer, text, sizeof(buffer)-1);
-    buffer[sizeof(buffer)-1] = '\0';
-    
+    strncpy(buffer, text, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
     char* word = strtok(buffer, " \n");
-    while (word != NULL) {
+    while (word != nullptr) {
         int wWidth = canvas.textWidth(word);
         int spaceWidth = canvas.textWidth(" ");
-        
+
         if (cursorX + wWidth > x + maxWidth && cursorX > x) {
             cursorX = x;
             cursorY += lineHeight;
         }
-        
+
         cursorX += wWidth + spaceWidth;
-        word = strtok(NULL, " \n");
+        word = strtok(nullptr, " \n");
     }
     return cursorY + lineHeight;
 }
 
-void drawScrollIndicators(int dw, int scrollY, int maxScroll) {
-    if (maxScroll <= 0) return;
-    
+// ---- Scroll affordances ----------------------------------------------------
+static void drawScrollHints(int scrollY, int contentHeight, int viewportHeight) {
+    if (contentHeight <= viewportHeight) return;
+    uint16_t mark = cDim();
+    canvas.setTextColor(mark);
     canvas.setTextDatum(top_right);
     if (scrollY > 0) {
-        canvas.setTextColor(TFT_WHITE);
-        canvas.drawString("\x18", dw - 2, 22);
+        canvas.fillTriangle(232, UI_BODY_TOP + 2, 236, UI_BODY_TOP + 2,
+                            234, UI_BODY_TOP - 1, mark);
     }
-    if (scrollY < maxScroll) {
-        canvas.setTextColor(TFT_WHITE);
-        canvas.drawString("\x19", dw - 2, 55);
+    if (scrollY < contentHeight - viewportHeight) {
+        canvas.fillTriangle(232, UI_BODY_BOTTOM - 2, 236, UI_BODY_BOTTOM - 2,
+                            234, UI_BODY_BOTTOM + 1, mark);
     }
 }
 
+// ============================================================================
+// IDLE screen
+// ============================================================================
 void drawIdleScreen(const char* version, const char* ip, bool showSetupHint) {
     initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
+    canvas.fillSprite(UI_RGB_BG);
 
-    canvas.fillSprite(BLACK);
+    // Status bar: show IP as "label" if it's a real status; otherwise "IDLE"
+    bool connecting = version && strstr(version, "Connecting") != nullptr;
+    drawStatusBar(connecting ? "CONNECTING" : "IDLE", !connecting);
 
-    drawCharacterFace(dw / 2, dh / 2 - 14, false);
+    // Mascot centered horizontally, top of body
+    drawSprite24(120, UI_BODY_TOP + 24, SPRITE_IDLE, ACC_IDLE);
 
+    // Animated blink (swap sprite occasionally)
+    unsigned long now = millis();
+    if (isBlinking) {
+        if (now - lastBlinkTime > 150) {
+            isBlinking = false;
+            lastBlinkTime = now;
+        }
+        drawSprite24(120, UI_BODY_TOP + 24, SPRITE_IDLE_BLINK, ACC_IDLE);
+    } else {
+        if (now - lastBlinkTime > 3000 + (random() % 2000)) {
+            isBlinking = true;
+            lastBlinkTime = now;
+        }
+    }
+
+    // Secondary text under mascot
+    canvas.setTextColor(UI_RGB_FG);
     canvas.setTextDatum(middle_center);
-    canvas.setTextColor(TFT_WHITE);
-    canvas.drawString("Waiting for agent...", dw / 2, dh / 2 + 8);
+    canvas.drawString(ip ? ip : "Waiting for agent...", 120, UI_BODY_TOP + 60);
 
-    if (showSetupHint) {
-        canvas.setTextColor(TFT_LIGHTGREY);
+    // Version mini-line (dim)
+    if (version && !connecting) {
+        canvas.setTextColor(cDim());
         canvas.setTextDatum(middle_center);
-        canvas.drawString("[S] Settings", dw / 2, dh / 2 + 20);
+        canvas.drawString(version, 120, UI_BODY_TOP + 78);
     }
 
-    if (version) {
-        canvas.setTextColor(TFT_LIGHTGREY);
-        canvas.setTextDatum(bottom_center);
-        canvas.drawString(version, dw / 2, dh - 5);
-    }
-
-    if (ip) {
-        canvas.setTextDatum(top_center);
-        canvas.drawString(ip, dw / 2, 5);
+    // Footer
+    if (showSetupHint) {
+        drawFooterDim("[S] Settings");
+    } else {
+        drawFooterDim("");
     }
 
     canvas.pushSprite(0, 0);
 }
 
+// ============================================================================
+// SLEEP screen
+// ============================================================================
+void drawSleepScreen() {
+    initCanvasIfNeeded();
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar("SLEEP", true);
+
+    UIAccent acc = ACC_IDLE;
+    drawSprite24(120, UI_BODY_TOP + 28, SPRITE_SLEEP, acc);
+
+    // Z particles
+    unsigned long now = millis();
+    if (now - lastZTime > 600) {
+        lastZTime = now;
+        sleepZOffset = 0;
+    }
+    sleepZOffset = (now - lastZTime) / 40;
+    if (sleepZOffset < 14) {
+        int alpha = 255 - (sleepZOffset * 18);
+        uint16_t zColor = canvas.color565(alpha, alpha, alpha);
+        canvas.setTextColor(zColor);
+        canvas.setTextDatum(top_left);
+        canvas.drawString("Z", 138, UI_BODY_TOP + 14 - sleepZOffset);
+        if (sleepZOffset > 4) {
+            canvas.drawString("z", 144, UI_BODY_TOP + 18 - sleepZOffset);
+        }
+    }
+
+    canvas.setTextDatum(middle_center);
+    canvas.setTextColor(cDim());
+    canvas.drawString("Sleeping...", 120, UI_BODY_TOP + 66);
+
+    drawFooterDim("[S] Settings   [W] Wake");
+
+    canvas.pushSprite(0, 0);
+}
+
+// ============================================================================
+// ASK / ESCALATE — shared question + free-text input layout
+// ============================================================================
+static void drawQuestionScreen(const char* stateLabel, const UIAccent& acc,
+                                const Sprite24& sprite, const char* question,
+                                const char* context, const char* inputBuffer,
+                                int scrollY, bool escalateFlash) {
+    initCanvasIfNeeded();
+    canvas.fillSprite(UI_RGB_BG);
+
+    UIAccent renderAcc = acc;
+    if (escalateFlash) {
+        unsigned long now = millis();
+        if (now - lastFlashTime > 250) {
+            lastFlashTime = now;
+            escalateBright = !escalateBright;
+        }
+        if (!escalateBright) {
+            // Half-brightness frame
+            renderAcc.r = (acc.r * 2) / 5;
+            renderAcc.g = (acc.g * 2) / 5;
+            renderAcc.b = (acc.b * 2) / 5;
+        }
+    }
+
+    drawStatusBar(stateLabel, true);
+
+    // Mascot top-left of body
+    drawSprite24(UI_MASCOT_CX, UI_MASCOT_CY, sprite, renderAcc);
+
+    // Body text region (right of mascot)
+    int bodyLeft = UI_BODY_TEXT_X;
+    int bodyRight = 240 - UI_PAD_X;
+    int bodyMaxW = bodyRight - bodyLeft;
+    int bodyTop = UI_BODY_TOP;
+    int inputAreaTop = UI_BODY_BOTTOM - 12;
+    int textClipBottom = inputAreaTop - 2;
+
+    // Question (white, primary)
+    int y = bodyTop;
+    if (question) {
+        y = drawWordWrappedColored(question, bodyLeft, y, bodyMaxW,
+                                    UI_RGB_FG, scrollY, bodyTop, textClipBottom);
+    }
+    // Context (dim, smaller visual weight)
+    if (context && context[0] != '\0') {
+        y += 3;
+        y = drawWordWrappedColored(context, bodyLeft, y, bodyMaxW,
+                                    cDim(), scrollY, bodyTop, textClipBottom);
+    }
+
+    int contentHeight = y - bodyTop;
+    int viewportHeight = textClipBottom - bodyTop;
+    drawScrollHints(scrollY, contentHeight, viewportHeight);
+
+    // Input separator + prompt
+    canvas.drawLine(bodyLeft, inputAreaTop - 1, bodyRight, inputAreaTop - 1, cMuted());
+    canvas.setTextColor(accentBright(renderAcc));
+    canvas.setTextDatum(top_left);
+    canvas.setCursor(bodyLeft, inputAreaTop);
+    canvas.print("> ");
+
+    canvas.setTextColor(UI_RGB_FG);
+    int inputX = bodyLeft + canvas.textWidth("> ");
+    if (inputBuffer) canvas.drawString(inputBuffer, inputX, inputAreaTop);
+
+    int caretX = inputX + (inputBuffer ? canvas.textWidth(inputBuffer) : 0) + 1;
+    drawCaret(caretX, inputAreaTop);
+
+    // Footer
+    drawFooter("ENTER send   ESC cancel", renderAcc);
+
+    canvas.pushSprite(0, 0);
+}
+
+void drawAskScreen(const char* question, const char* context, const char* inputBuffer, int scrollY) {
+    drawQuestionScreen("ASK", ACC_ASK, SPRITE_ASK, question, context, inputBuffer, scrollY, false);
+}
+
+void drawEscalateScreen(const char* question, const char* context, const char* inputBuffer, int scrollY) {
+    drawQuestionScreen("ESCALATE", ACC_ESCALATE, SPRITE_ESCALATE,
+                       question, context, inputBuffer, scrollY, true);
+}
+
+// ============================================================================
+// CONFIRM — yes/no
+// ============================================================================
+void drawConfirmScreen(const char* statement, const char* consequence, int scrollY) {
+    initCanvasIfNeeded();
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar("CONFIRM", true);
+    drawSprite24(UI_MASCOT_CX, UI_MASCOT_CY, SPRITE_CONFIRM, ACC_CONFIRM);
+
+    int bodyLeft = UI_BODY_TEXT_X;
+    int bodyRight = 240 - UI_PAD_X;
+    int bodyMaxW = bodyRight - bodyLeft;
+    int bodyTop = UI_BODY_TOP;
+    int textClipBottom = UI_BODY_BOTTOM;
+
+    int y = bodyTop;
+    if (statement) {
+        y = drawWordWrappedColored(statement, bodyLeft, y, bodyMaxW,
+                                    UI_RGB_FG, scrollY, bodyTop, textClipBottom);
+    }
+    if (consequence && consequence[0] != '\0') {
+        y += 3;
+        y = drawWordWrappedColored(consequence, bodyLeft, y, bodyMaxW,
+                                    cDim(), scrollY, bodyTop, textClipBottom);
+    }
+
+    int contentHeight = y - bodyTop;
+    int viewportHeight = textClipBottom - bodyTop;
+    drawScrollHints(scrollY, contentHeight, viewportHeight);
+
+    drawFooter("[Y] Yes   [N] No   ESC cancel", ACC_CONFIRM);
+
+    canvas.pushSprite(0, 0);
+}
+
+// ============================================================================
+// CHOOSE — 2-6 options
+// ============================================================================
+void drawChooseScreen(const char* question, const char* context, const String options[], int optionCount, int scrollY) {
+    initCanvasIfNeeded();
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar("CHOOSE", true);
+    drawSprite24(UI_MASCOT_CX, UI_MASCOT_CY, SPRITE_CHOOSE, ACC_CHOOSE);
+
+    int bodyLeft = UI_BODY_TEXT_X;
+    int bodyRight = 240 - UI_PAD_X;
+    int bodyMaxW = bodyRight - bodyLeft;
+    int bodyTop = UI_BODY_TOP;
+    int optionsTop = bodyTop + 12;
+
+    // Question on top row
+    int y = bodyTop;
+    if (question) {
+        y = drawWordWrappedColored(question, bodyLeft, y, bodyMaxW,
+                                    UI_RGB_FG, 0, bodyTop, optionsTop - 1);
+    }
+    if (context && context[0] != '\0') {
+        canvas.setTextColor(cDim());
+        canvas.setTextDatum(top_left);
+        canvas.drawString(context, bodyLeft, y);
+    }
+
+    // Options list — full width below mascot row
+    int rowY = optionsTop;
+    int optLeft = UI_PAD_X + 2;
+    int optRight = 240 - UI_PAD_X;
+    int rowH = canvas.fontHeight() + 4;
+    int maxRows = (UI_BODY_BOTTOM - optionsTop) / rowH;
+
+    for (int i = 0; i < optionCount && i < 6; i++) {
+        int yPos = rowY + i * rowH - scrollY;
+        if (yPos + rowH < optionsTop) continue;
+        if (yPos > UI_BODY_BOTTOM) break;
+
+        // Index bullet (in accent color)
+        canvas.setTextColor(accentBright(ACC_CHOOSE));
+        canvas.setTextDatum(top_left);
+        canvas.setCursor(optLeft, yPos);
+        canvas.printf("%d", i + 1);
+
+        // Vertical separator
+        canvas.drawLine(optLeft + 8, yPos - 1, optLeft + 8, yPos + rowH - 3, cMuted());
+
+        // Option text
+        canvas.setTextColor(UI_RGB_FG);
+        canvas.drawString(options[i].c_str(), optLeft + 14, yPos);
+    }
+
+    // Scroll hints — measure total rows
+    int totalH = optionCount * rowH;
+    int viewportH = UI_BODY_BOTTOM - optionsTop;
+    drawScrollHints(scrollY, totalH, viewportH);
+
+    drawFooter("1-6 pick   ESC cancel", ACC_CHOOSE);
+
+    canvas.pushSprite(0, 0);
+}
+
+// ============================================================================
+// SETUP family (label/context/input)
+// ============================================================================
 void drawSetupScreen(const char* label, const char* context, const char* inputBuffer) {
     initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 100, 0));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("SETUP", dw / 2, 10);
-    
-    int y = 25;
-    if (label) y = drawWordWrapped(label, 5, y, dw - 10, TFT_GREEN, 0, 0, 0);
-    if (context && strlen(context) > 0) {
-        y += 5;
-        y = drawWordWrapped(context, 5, y, dw - 10, TFT_LIGHTGREY, 0, 0, 0);
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar("SETUP", false);
+    drawSprite24(UI_MASCOT_CX, UI_MASCOT_CY, SPRITE_SETUP, ACC_SETUP);
+
+    int bodyLeft = UI_BODY_TEXT_X;
+    int bodyRight = 240 - UI_PAD_X;
+    int bodyMaxW = bodyRight - bodyLeft;
+    int bodyTop = UI_BODY_TOP;
+    int inputAreaTop = UI_BODY_BOTTOM - 12;
+
+    int y = bodyTop;
+    if (label) {
+        y = drawWordWrappedColored(label, bodyLeft, y, bodyMaxW,
+                                    accentBright(ACC_SETUP), 0, bodyTop, inputAreaTop - 2);
     }
-    
-    y += 5;
-    canvas.drawLine(0, y, dw, y, TFT_DARKGREY);
-    y += 5;
-    
-    canvas.setTextColor(TFT_WHITE);
+    if (context && context[0] != '\0') {
+        y += 3;
+        y = drawWordWrappedColored(context, bodyLeft, y, bodyMaxW,
+                                    cDim(), 0, bodyTop, inputAreaTop - 2);
+    }
+
+    canvas.drawLine(bodyLeft, inputAreaTop - 1, bodyRight, inputAreaTop - 1, cMuted());
+    canvas.setTextColor(accentBright(ACC_SETUP));
     canvas.setTextDatum(top_left);
-    canvas.setCursor(5, y);
+    canvas.setCursor(bodyLeft, inputAreaTop);
     canvas.print("> ");
-    if (inputBuffer) canvas.print(inputBuffer);
-    
+
+    canvas.setTextColor(UI_RGB_FG);
+    int inputX = bodyLeft + canvas.textWidth("> ");
+    if (inputBuffer) canvas.drawString(inputBuffer, inputX, inputAreaTop);
+
+    int caretX = inputX + (inputBuffer ? canvas.textWidth(inputBuffer) : 0) + 1;
+    drawCaret(caretX, inputAreaTop);
+
+    drawFooter("ENTER next   ESC back", ACC_SETUP);
+
     canvas.pushSprite(0, 0);
 }
 
 void drawSetupSummaryScreen(const char* ssid, const char* serverIP, uint16_t port) {
     initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 100, 0));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("SETUP", dw / 2, 10);
-    
-    int y = 25;
-    canvas.setTextColor(TFT_GREEN);
-    canvas.setTextDatum(top_left);
-    canvas.setCursor(5, y);
-    canvas.print("WiFi: ");
-    canvas.setTextColor(TFT_WHITE);
-    y = drawWordWrapped(ssid ? ssid : "-", 40, y, dw - 45, TFT_WHITE, 0, 0, 0);
+    canvas.fillSprite(UI_RGB_BG);
 
-    y += 5;
-    canvas.setTextColor(TFT_GREEN);
-    canvas.setCursor(5, y);
-    canvas.print("Server: ");
-    canvas.setTextColor(TFT_WHITE);
-    char serverInfo[32];
+    drawStatusBar("SETUP", false);
+    drawSprite24(UI_MASCOT_CX, UI_MASCOT_CY, SPRITE_SETUP, ACC_SETUP);
+
+    int bodyLeft = UI_BODY_TEXT_X;
+    int y = UI_BODY_TOP;
+
+    canvas.setTextColor(accentBright(ACC_SETUP));
+    canvas.setTextDatum(top_left);
+    canvas.setCursor(bodyLeft, y);
+    canvas.print("Review settings:");
+
+    y += canvas.fontHeight() + 6;
+    canvas.setTextColor(cDim());
+    canvas.setCursor(bodyLeft, y);
+    canvas.print("WiFi");
+    canvas.setTextColor(UI_RGB_FG);
+    canvas.drawString(ssid ? ssid : "-", bodyLeft + 38, y);
+
+    y += canvas.fontHeight() + 4;
+    canvas.setTextColor(cDim());
+    canvas.setCursor(bodyLeft, y);
+    canvas.print("Server");
+    canvas.setTextColor(UI_RGB_FG);
+    char serverInfo[40];
     snprintf(serverInfo, sizeof(serverInfo), "%s:%d", serverIP ? serverIP : "-", port);
-    y = drawWordWrapped(serverInfo, 50, y, dw - 55, TFT_WHITE, 0, 0, 0);
-    
-    canvas.setTextColor(TFT_WHITE);
-    canvas.setTextDatum(bottom_center);
-    canvas.drawString("[Y] Save   [N] Retry", dw / 2, dh - 5);
-    
+    canvas.drawString(serverInfo, bodyLeft + 38, y);
+
+    drawFooter("[Y] Save   [N] Retry", ACC_SETUP);
+
     canvas.pushSprite(0, 0);
 }
 
-void drawAskScreen(const char* question, const char* context, const char* inputBuffer, int scrollY) {
-    initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 0, 128));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("ASK", dw / 2, 10);
-    
-    int y = 25;
-    if (question) y = drawWordWrapped(question, 5, y, dw - 10, TFT_YELLOW, scrollY, 25, 33);
-    if (context && strlen(context) > 0) {
-        y += 5;
-        y = drawWordWrapped(context, 5, y, dw - 10, TFT_LIGHTGREY, scrollY, 25, 33);
-    }
-    
-    canvas.drawLine(0, 60, dw, 60, TFT_DARKGREY);
-    
-    canvas.setTextColor(TFT_WHITE);
-    canvas.setTextDatum(top_left);
-    canvas.setCursor(5, 65);
-    canvas.print("> ");
-    if (inputBuffer) canvas.print(inputBuffer);
-    
-    canvas.pushSprite(0, 0);
-}
-
-void drawEscalateScreen(const char* question, const char* context, const char* inputBuffer, int scrollY) {
-    initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(200, 100, 0));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("ESCALATE", dw / 2, 10);
-    
-    int y = 25;
-    if (question) y = drawWordWrapped(question, 5, y, dw - 10, TFT_YELLOW, scrollY, 25, 33);
-    if (context && strlen(context) > 0) {
-        y += 5;
-        y = drawWordWrapped(context, 5, y, dw - 10, TFT_LIGHTGREY, scrollY, 25, 33);
-    }
-    
-    canvas.drawLine(0, 60, dw, 60, TFT_DARKGREY);
-    
-    canvas.setTextColor(TFT_WHITE);
-    canvas.setTextDatum(top_left);
-    canvas.setCursor(5, 65);
-    canvas.print("> ");
-    if (inputBuffer) canvas.print(inputBuffer);
-    
-    canvas.pushSprite(0, 0);
-}
-
-void drawConfirmScreen(const char* statement, const char* consequence, int scrollY) {
-    initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(128, 0, 0));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("CONFIRM", dw / 2, 10);
-    
-    int y = 25;
-    if (statement) y = drawWordWrapped(statement, 5, y, dw - 10, TFT_ORANGE, scrollY, 25, 36);
-    if (consequence && strlen(consequence) > 0) {
-        y += 5;
-        y = drawWordWrapped(consequence, 5, y, dw - 10, TFT_LIGHTGREY, scrollY, 25, 36);
-    }
-    
-    canvas.setTextColor(TFT_WHITE);
-    canvas.setTextDatum(bottom_center);
-    canvas.drawString("[Y] Yes   [N] No", dw / 2, dh - 5);
-    
-    canvas.pushSprite(0, 0);
-}
-
-void drawChooseScreen(const char* question, const char* context, const String options[], int optionCount, int scrollY) {
-    initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 128, 128));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("CHOOSE", dw / 2, 10);
-    
-    int y = 25;
-    if (question) y = drawWordWrapped(question, 5, y, dw - 10, TFT_CYAN, scrollY, 25, 36);
-    if (context && strlen(context) > 0) {
-        y += 5;
-        y = drawWordWrapped(context, 5, y, dw - 10, TFT_LIGHTGREY, scrollY, 25, 36);
-    }
-    
-    y += 5;
-    canvas.setTextDatum(top_left);
-    for (int i = 0; i < optionCount && i < 6; i++) {
-        canvas.setTextColor(TFT_WHITE);
-        canvas.setCursor(5, y - scrollY);
-        if (y - scrollY + canvas.fontHeight() > 25 && y - scrollY < dh - 5) {
-            canvas.printf("%d. ", i + 1);
-            y = drawWordWrapped(options[i].c_str(), 20, y, dw - 25, TFT_WHITE, scrollY, 25, 36);
-        } else {
-            y = drawWordWrapped(options[i].c_str(), 20, y, dw - 25, TFT_WHITE, scrollY, 25, 36);
-        }
-    }
-    
-    canvas.pushSprite(0, 0);
-}
-
-void drawSleepScreen() {
-    initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-
-    canvas.fillSprite(BLACK);
-
-    drawCharacterFace(dw / 2, dh / 2 - 14, true);
-
-    canvas.setTextDatum(middle_center);
-    canvas.setTextColor(TFT_DARKGREY);
-    canvas.drawString("Sleeping...", dw / 2, dh / 2 + 8);
-    canvas.setTextColor(TFT_LIGHTGREY);
-    canvas.setTextDatum(bottom_center);
-    canvas.drawString("[S] Settings  [W] Wake", dw / 2, dh - 5);
-    canvas.pushSprite(0, 0);
-}
-
+// ============================================================================
+// SETTINGS menu
+// ============================================================================
 void drawSettingsMenuScreen(bool hasConfig, const char* currentSSID, const char* currentServer) {
     initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 100, 0));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("SETTINGS", dw / 2, 10);
-    
-    int y = 25;
-    canvas.setTextColor(TFT_GREEN);
-    canvas.setTextDatum(top_left);
-    canvas.setCursor(5, y);
-    canvas.print("[1] WiFi");
-    
-    y += canvas.fontHeight() + 2;
-    canvas.setTextColor(TFT_CYAN);
-    canvas.setCursor(5, y);
-    canvas.print("[2] Server");
-    
-    y += canvas.fontHeight() + 2;
-    canvas.setTextColor(TFT_YELLOW);
-    canvas.setCursor(5, y);
-    canvas.print("[3] Reset All");
-    
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar("SETTINGS", true);
+    drawSprite24(UI_MASCOT_CX, UI_MASCOT_CY, SPRITE_SETUP, ACC_SETUP);
+
+    int bodyLeft = UI_BODY_TEXT_X;
+    int y = UI_BODY_TOP;
+    int rowH = canvas.fontHeight() + 4;
+
+    struct { const char* key; const char* label; } items[] = {
+        { "1", "WiFi network" },
+        { "2", "Server" },
+        { "3", "Reset all" }
+    };
+
+    for (int i = 0; i < 3; i++) {
+        canvas.setTextColor(accentBright(ACC_SETUP));
+        canvas.setTextDatum(top_left);
+        canvas.setCursor(bodyLeft, y);
+        canvas.print(items[i].key);
+        canvas.drawLine(bodyLeft + 8, y - 1, bodyLeft + 8, y + rowH - 3, cMuted());
+        canvas.setTextColor(UI_RGB_FG);
+        canvas.drawString(items[i].label, bodyLeft + 14, y);
+        y += rowH;
+    }
+
     if (hasConfig && currentSSID && currentServer) {
-        y += canvas.fontHeight() + 4;
-        canvas.setTextColor(TFT_LIGHTGREY);
-        canvas.setCursor(5, y);
-        canvas.print("Current:");
+        y += 4;
+        canvas.drawLine(bodyLeft, y - 2, 240 - UI_PAD_X, y - 2, cMuted());
+        canvas.setTextColor(cDim());
+        canvas.setCursor(bodyLeft, y);
+        canvas.printf("Now: %s", currentSSID);
         y += canvas.fontHeight() + 1;
-        canvas.setCursor(5, y);
-        canvas.print(currentSSID);
-        y += canvas.fontHeight() + 1;
-        canvas.setCursor(5, y);
+        canvas.setCursor(bodyLeft, y);
         canvas.print(currentServer);
     }
-    
+
+    drawFooter("1-3 pick   ESC back", ACC_SETUP);
+
+    canvas.pushSprite(0, 0);
+}
+
+// ============================================================================
+// WiFi network list
+// ============================================================================
+static void drawNetworkListBody(const String networks[], int networkCount,
+                                 const int8_t* rssi, bool isSaved) {
+    int rowH = canvas.fontHeight() + 4;
+    int listTop = UI_BODY_TOP + 2;
+    int listLeft = UI_PAD_X + 2;
+    int listRight = 240 - UI_PAD_X;
+    int nameMaxX = rssi ? listRight - 42 : listRight;
+
+    for (int i = 0; i < networkCount && i < 6; i++) {
+        int y = listTop + i * rowH;
+        if (y + rowH > UI_BODY_BOTTOM) break;
+
+        canvas.setTextColor(accentBright(ACC_SETUP));
+        canvas.setTextDatum(top_left);
+        canvas.setCursor(listLeft, y);
+        canvas.printf("%d", i + 1);
+
+        canvas.drawLine(listLeft + 8, y - 1, listLeft + 8, y + rowH - 3, cMuted());
+
+        // Name (truncated if too long)
+        canvas.setTextColor(UI_RGB_FG);
+        const char* ssid = networks[i].c_str();
+        char truncated[28];
+        strncpy(truncated, ssid, sizeof(truncated) - 1);
+        truncated[sizeof(truncated) - 1] = '\0';
+        int avail = nameMaxX - (listLeft + 14);
+        while (canvas.textWidth(truncated) > avail && strlen(truncated) > 4) {
+            truncated[strlen(truncated) - 1] = '\0';
+            int n = strlen(truncated);
+            if (n >= 3) {
+                truncated[n - 1] = '.';
+                truncated[n - 2] = '.';
+                truncated[n - 3] = '.';
+            }
+        }
+        canvas.drawString(truncated, listLeft + 14, y);
+
+        // RSSI badge
+        if (rssi) {
+            int8_t signal = rssi[i];
+            uint16_t col = canvas.color565(0x00, 0xCC, 0x66);
+            if (signal < -70) col = canvas.color565(0xCC, 0x40, 0x40);
+            else if (signal < -60) col = canvas.color565(0xFF, 0xB0, 0x00);
+            canvas.setTextColor(col);
+            canvas.setTextDatum(top_right);
+            char rssiBuf[8];
+            snprintf(rssiBuf, sizeof(rssiBuf), "%ddBm", signal);
+            canvas.drawString(rssiBuf, listRight - 1, y);
+        }
+    }
+}
+
+void drawNetworkListScreen(const String networks[], int networkCount, int8_t rssi[]) {
+    initCanvasIfNeeded();
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar("WiFi", false);
+    drawNetworkListBody(networks, networkCount, rssi, false);
+    drawFooter("1-6 pick   [R] Rescan", ACC_SETUP);
+
     canvas.pushSprite(0, 0);
 }
 
 void drawWiFiSelectScreen(const String networks[], int networkCount, int8_t rssi[], bool showSaved) {
     initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 80, 160));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    if (showSaved) {
-        canvas.drawString("SAVED NETWORKS", dw / 2, 10);
-    } else {
-        canvas.drawString("WiFi NETWORKS", dw / 2, 10);
-    }
-    
-    int y = 25;
-    canvas.setTextDatum(top_left);
-    for (int i = 0; i < networkCount && i < 6; i++) {
-        const char* ssid = networks[i].c_str();
-        int nameWidth = canvas.textWidth(ssid);
-        int maxNameWidth = dw - 50;
-        
-        canvas.setTextColor(TFT_CYAN);
-        canvas.setCursor(5, y);
-        canvas.printf("%d.", i + 1);
-        
-        canvas.setTextColor(TFT_WHITE);
-        if (nameWidth > maxNameWidth) {
-            char truncated[24];
-            strncpy(truncated, ssid, sizeof(truncated) - 1);
-            truncated[sizeof(truncated) - 1] = '\0';
-            truncated[20] = '.';
-            truncated[21] = '.';
-            truncated[22] = '.';
-            truncated[23] = '\0';
-            canvas.drawString(truncated, 22, y);
-        } else {
-            canvas.drawString(ssid, 22, y);
-        }
-        
-        if (rssi) {
-            canvas.setTextColor(TFT_GREEN);
-            int8_t signal = rssi[i];
-            if (signal < -70) canvas.setTextColor(TFT_RED);
-            else if (signal < -60) canvas.setTextColor(TFT_YELLOW);
-            canvas.setCursor(dw - 35, y);
-            canvas.printf("%ddBm", signal);
-        }
-        
-        y += canvas.fontHeight() + 2;
-    }
-    
-    if (showSaved) {
-        canvas.setTextColor(TFT_LIGHTGREY);
-        canvas.setTextDatum(bottom_center);
-        canvas.drawString("1-6 Select  [N] New", dw / 2, dh - 5);
-    } else {
-        canvas.setTextColor(TFT_LIGHTGREY);
-        canvas.setTextDatum(bottom_center);
-        canvas.drawString("1-6 Select  [R] Rescan", dw / 2, dh - 5);
-    }
-    
+    canvas.fillSprite(UI_RGB_BG);
+
+    drawStatusBar(showSaved ? "WiFi (saved)" : "WiFi", false);
+    drawNetworkListBody(networks, networkCount, showSaved ? nullptr : rssi, showSaved);
+    drawFooter(showSaved ? "1-6 pick   [N] New" : "1-6 pick   [R] Rescan", ACC_SETUP);
+
     canvas.pushSprite(0, 0);
 }
 
 void drawServerSelectScreen(const char* ips[], int ports[], int count) {
     initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 80, 160));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("SAVED SERVERS", dw / 2, 10);
-    
-    int y = 25;
-    canvas.setTextDatum(top_left);
-    for (int i = 0; i < count && i < 6; i++) {
-        canvas.setTextColor(TFT_CYAN);
-        canvas.setCursor(5, y);
-        canvas.printf("%d.", i + 1);
-        
-        canvas.setTextColor(TFT_WHITE);
-        canvas.setCursor(22, y);
-        canvas.printf("%s:%d", ips[i], ports[i]);
-        
-        y += canvas.fontHeight() + 2;
-    }
-    
-    canvas.setTextColor(TFT_LIGHTGREY);
-    canvas.setTextDatum(bottom_center);
-    canvas.drawString("1-6 Select  [N] New", dw / 2, dh - 5);
-    
-    canvas.pushSprite(0, 0);
-}
+    canvas.fillSprite(UI_RGB_BG);
 
-void drawNetworkListScreen(const String networks[], int networkCount, int8_t rssi[]) {
-    initCanvasIfNeeded();
-    int dw = M5Cardputer.Display.width();
-    int dh = M5Cardputer.Display.height();
-    
-    canvas.fillSprite(BLACK);
-    canvas.fillRect(0, 0, dw, 20, canvas.color565(0, 80, 160));
-    
-    canvas.setTextColor(WHITE);
-    canvas.setTextDatum(middle_center);
-    canvas.drawString("WiFi NETWORKS", dw / 2, 10);
-    
-    int y = 25;
-    canvas.setTextDatum(top_left);
-    for (int i = 0; i < networkCount && i < 6; i++) {
-        const char* ssid = networks[i].c_str();
-        int nameWidth = canvas.textWidth(ssid);
-        int maxNameWidth = dw - 50;
-        
-        canvas.setTextColor(TFT_CYAN);
-        canvas.setCursor(5, y);
-        canvas.printf("%d.", i + 1);
-        
-        canvas.setTextColor(TFT_WHITE);
-        if (nameWidth > maxNameWidth) {
-            char truncated[24];
-            strncpy(truncated, ssid, sizeof(truncated) - 1);
-            truncated[sizeof(truncated) - 1] = '\0';
-            truncated[20] = '.';
-            truncated[21] = '.';
-            truncated[22] = '.';
-            truncated[23] = '\0';
-            canvas.drawString(truncated, 22, y);
-        } else {
-            canvas.drawString(ssid, 22, y);
-        }
-        
-        canvas.setTextColor(TFT_GREEN);
-        int8_t signal = rssi[i];
-        if (signal < -70) canvas.setTextColor(TFT_RED);
-        else if (signal < -60) canvas.setTextColor(TFT_YELLOW);
-        canvas.setCursor(dw - 35, y);
-        canvas.printf("%ddBm", signal);
-        
-        y += canvas.fontHeight() + 2;
+    drawStatusBar("Server", false);
+
+    int rowH = canvas.fontHeight() + 4;
+    int listTop = UI_BODY_TOP + 2;
+    int listLeft = UI_PAD_X + 2;
+
+    for (int i = 0; i < count && i < 6; i++) {
+        int y = listTop + i * rowH;
+        if (y + rowH > UI_BODY_BOTTOM) break;
+
+        canvas.setTextColor(accentBright(ACC_SETUP));
+        canvas.setTextDatum(top_left);
+        canvas.setCursor(listLeft, y);
+        canvas.printf("%d", i + 1);
+        canvas.drawLine(listLeft + 8, y - 1, listLeft + 8, y + rowH - 3, cMuted());
+
+        canvas.setTextColor(UI_RGB_FG);
+        canvas.setCursor(listLeft + 14, y);
+        canvas.printf("%s:%d", ips[i], ports[i]);
     }
-    
-    canvas.setTextColor(TFT_LIGHTGREY);
-    canvas.setTextDatum(bottom_center);
-    canvas.drawString("1-6 Select  [R] Rescan", dw / 2, dh - 5);
-    
+
+    drawFooter("1-6 pick   [N] New", ACC_SETUP);
+
     canvas.pushSprite(0, 0);
 }
